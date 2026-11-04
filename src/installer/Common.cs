@@ -14,7 +14,7 @@ using System.Windows.Forms;
 static class Installer
 {
     const string AppName = "City Minecraft Java IDE";
-    const string Version = "1.0.0";
+    const string Version = "1.0.1";
     public const string RegKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\CityMinecraftIDE";
 
     [STAThread]
