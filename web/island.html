@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<title>Island</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: transparent;
+    font: 12px/1.5 "Microsoft YaHei UI", "Segoe UI", sans-serif; color: #dbe3ee;
+    user-select: none; }
+  #island {
+    height: 100%; width: 100%;
+    background: linear-gradient(180deg, #161d26, #10151c);
+    border: 1px solid #2b3a4d; border-radius: 16px;
+    box-shadow: 0 10px 30px rgba(0,0,0,.55);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  #head {
+    height: 46px; flex: 0 0 46px; display: flex; align-items: center; gap: 9px;
+    padding: 0 14px; cursor: pointer;
+  }
+  #head:hover { background: #1b2430; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: #e2a336; flex: 0 0 8px; }
+  .dot.ok { background: #37c98b; }
+  .dot.err { background: #e4605f; }
+  .dot.busy { animation: pulse 1s infinite; }
+  @keyframes pulse { 50% { opacity: .3; } }
+  #title { font-weight: 600; }
+  #sub { color: #7f8b9c; font-size: 11px; margin-left: auto; }
+  #chev { color: #6f8098; font-size: 10px; margin-left: 8px; }
+
+  #body { flex: 1 1 auto; display: flex; min-height: 0; border-top: 1px solid #23303f; }
+  #left, #right { min-width: 0; padding: 10px 12px; overflow: auto; }
+  #left { flex: 1.15; border-right: 1px solid #23303f; background: #0c1117; }
+  #right { flex: 1; }
+  .pane-title { font-size: 11px; color: #7f8b9c; margin-bottom: 6px; display: flex; gap: 8px; align-items: center; }
+  pre { margin: 0; font: 11px/1.55 Consolas, "Cascadia Mono", monospace; color: #93a7bd; white-space: pre-wrap; word-break: break-all; }
+
+  .hit { background: #141a22; border: 1px solid #24303d; border-left: 3px solid #e4605f;
+    border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; }
+  .hit .t { font-weight: 600; color: #ffb3b3; font-size: 12px; }
+  .hit .m { color: #8fa3bb; font-family: Consolas, monospace; font-size: 10.5px; margin: 3px 0; word-break: break-all; }
+  .hit .a { color: #c3d3e6; font-size: 11.5px; line-height: 1.6; }
+  .empty { color: #6f8098; font-size: 11.5px; padding: 10px 0; }
+</style>
+</head>
+<body>
+<div id="island">
+  <div id="head">
+    <span class="dot busy" id="dot"></span>
+    <span id="title">启动中…</span>
+    <span id="sub"></span>
+    <span id="chev">▸</span>
+  </div>
+  <div id="body">
+    <div id="left">
+      <div class="pane-title">日志 <span id="lineCount"></span></div>
+      <pre id="log">等待输出…</pre>
+    </div>
+    <div id="right">
+      <div class="pane-title">分析</div>
+      <div id="diag"><div class="empty">启动后 15 秒自动分析</div></div>
+    </div>
+  </div>
+</div>
+<script>
+const $ = (s) => document.querySelector(s);
+let lastLog = "";
+
+function post(msg) {
+  if (window.chrome && window.chrome.webview) window.chrome.webview.postMessage(msg);
+}
+
+$("#head").addEventListener("click", () => post("toggle"));
+
+async function poll() {
+  try {
+    const [p, d] = await Promise.all([
+      fetch("/api/progress", { cache: "no-store" }).then((r) => r.json()),
+      fetch("/api/diagnosis", { cache: "no-store" }).then((r) => r.json()),
+    ]);
+
+    const dot = $("#dot");
+    const title = $("#title");
+    const sub = $("#sub");
+
+    if (p.running) {
+      dot.className = "dot busy";
+      title.textContent = p.task || "运行中";
+      sub.textContent = p.message || "";
+    } else if (d.diagnosis) {
+      const bad = d.diagnosis.crashed || (d.diagnosis.hits || []).length > 0;
+      dot.className = "dot " + (bad ? "err" : "ok");
+      title.textContent = bad ? "发现问题" : "启动正常";
+      sub.textContent = d.diagnosis.version || "";
+    } else {
+      dot.className = "dot ok";
+      title.textContent = "已就绪";
+      sub.textContent = "";
+    }
+
+    if (p.running) post("busy");
+
+    const lines = (p.log || []).slice(-300);
+    const text = lines.join("\n");
+    if (text !== lastLog) {
+      lastLog = text;
+      const pre = $("#log");
+      const atBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 30;
+      pre.textContent = text || "等待输出…";
+      if (atBottom) pre.scrollTop = pre.scrollHeight;
+      $("#lineCount").textContent = lines.length + " 行";
+    }
+
+    if (d.diagnosis) {
+      const hits = d.diagnosis.hits || [];
+      $("#diag").innerHTML = hits.length
+        ? hits.map((h) => `<div class="hit"><div class="t">${h.title}</div>
+            <div class="m">${h.match}</div><div class="a">${h.advice}</div></div>`).join("")
+        : '<div class="empty">没有检测到已知问题，进游戏看看。</div>';
+    }
+  } catch (e) {
+    $("#dot").className = "dot err";
+    $("#title").textContent = "连不上后台";
+  }
+}
+
+window.chrome?.webview?.addEventListener("message", (e) => {
+  if (e.data === "expanded") $("#chev").textContent = "▾";
+  if (e.data === "collapsed") $("#chev").textContent = "▸";
+});
+
+poll();
+setInterval(poll, 1200);
+</script>
+</body>
+</html>
