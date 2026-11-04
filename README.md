@@ -1,5 +1,8 @@
 # City Minecraft Java IDE
 
+> 官网 / 下载页：**https://citybiome.github.io/city-minecraft-ide/**
+
+
 一个给 Minecraft 模组开发用的**本地 IDE**：原生窗口、内置编译器、下载启动一条龙。
 不用装 IDEA、不用配 Gradle，装完就能写代码、编模组、开游戏。
 
