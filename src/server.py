@@ -2025,7 +2025,8 @@ def list_worlds() -> list:
 
 
 # --------------------------------------------------------------------------- update
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
+DEFAULT_UPDATE_REPO = "citybiome/city-minecraft-ide"
 
 
 def parse_version(v: str):
@@ -2038,14 +2039,22 @@ def parse_version(v: str):
 
 def check_update(repo: str = "", current: str = "") -> dict:
     """问 GitHub 要最新 release，和本地版本比一下。"""
-    repo = (repo or cfg().get("update_repo") or "").strip().strip("/")
+    repo = (repo or cfg().get("update_repo") or DEFAULT_UPDATE_REPO).strip().strip("/")
     current = current or cfg().get("app_version") or APP_VERSION
     if not repo:
         return {"ok": False, "error": "还没有配置更新源（在设置里填 用户名/仓库）", "current": current}
     try:
         data = http_json_any([f"https://api.github.com/repos/{repo}/releases/latest"], timeout=15)
     except Exception as exc:
-        return {"ok": False, "error": "连不上 GitHub：" + str(exc)[:80], "current": current}
+        msg = str(exc)
+        if "404" in msg:
+            return {"ok": False, "repo": repo, "current": current,
+                    "error": "这个仓库还没有发布 release（草稿不算，去 Releases 页点 Publish）"}
+        if "403" in msg:
+            return {"ok": False, "repo": repo, "current": current,
+                    "error": "GitHub 接口被限流了，过一会再试"}
+        return {"ok": False, "repo": repo, "current": current,
+                "error": "连不上 GitHub：" + msg[:80]}
 
     tag = data.get("tag_name") or data.get("name") or ""
     latest = re.sub(r"^[vV]", "", tag)
