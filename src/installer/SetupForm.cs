@@ -104,7 +104,7 @@ class SetupForm : Form
             g.DrawString("City Minecraft Java IDE", f, br, 76, 20);
         using (Font f = new Font("Microsoft YaHei UI", 9f))
         using (SolidBrush br = new SolidBrush(Color.FromArgb(225, 235, 255)))
-            g.DrawString("安装程序 · v" + "1.0.0", f, br, 78, 46);
+            g.DrawString("安装程序 · v" + Installer.Version, f, br, 78, 46);
 
         using (Font f = new Font("Segoe UI", 11f, FontStyle.Bold))
         using (SolidBrush br = new SolidBrush(closeHot ? Color.White : Color.FromArgb(225, 235, 255)))
@@ -272,7 +272,7 @@ class SetupForm : Form
                     });
                 });
                 Shortcuts.Create(installDir, cbDesktop.Checked, cbStart.Checked);
-                Registry.Register(installDir, "1.0.0");
+                Registry.Register(installDir, Installer.Version);
                 BeginInvoke((Action)delegate { Finish(cbRun.Checked); });
             }
             catch (Exception ex)
