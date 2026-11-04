@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>City Minecraft Java IDE</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div class="app">
+
+  <header class="titlebar">
+    <div class="brand">
+      <div class="logo">C</div>
+      <div class="brand-text">
+        <b>City Minecraft Java IDE</b>
+        <span id="mcPath" class="sub">读取中…</span>
+      </div>
+    </div>
+    <div class="titlebar-actions">
+      <button class="ghost" id="btnMessages">消息</button>
+      <button class="ghost" id="btnOpenMc">打开游戏目录</button>
+      <button class="ghost" id="btnSettings">设置</button>
+    </div>
+  </header>
+
+  <div id="errBanner" class="err-banner" hidden>
+    <span id="errText"></span>
+    <span style="display:flex;gap:6px">
+      <button class="ghost tiny" id="errRetry" hidden>重试</button>
+      <button class="ghost tiny" id="errClose">知道了</button>
+    </span>
+  </div>
+
+  <div class="body">
+    <nav class="rail">
+      <button class="rail-btn active" data-page="launch" title="启动游戏">
+        <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg><small>启动</small>
+      </button>
+      <button class="rail-btn" data-page="versions" title="下载">
+        <svg viewBox="0 0 24 24"><path d="M12 3v11m0 0l-4-4m4 4l4-4M5 19h14"/></svg><small>下载</small>
+      </button>
+      <button class="rail-btn" data-page="code" title="代码">
+        <svg viewBox="0 0 24 24"><path d="M9 8l-4 4 4 4M15 8l4 4-4 4"/></svg><small>代码</small>
+      </button>
+      <button class="rail-btn" data-page="build" title="构建">
+        <svg viewBox="0 0 24 24"><path d="M4 20l5-5M14.5 4.5l5 5-2 2-5-5zM9 9l6 6"/></svg><small>构建</small>
+      </button>
+      <button class="rail-btn" data-page="java" title="Java">
+        <svg viewBox="0 0 24 24"><path d="M6 17h12M9 4c-2 5 3 5 0 9M13 6c-1 3 2 3 0 6"/></svg><small>Java</small>
+      </button>
+      <button class="rail-btn" data-page="tools" title="工具">
+        <svg viewBox="0 0 24 24"><path d="M14 6a4 4 0 105 5l-9 9-5-5z"/></svg><small>工具</small>
+      </button>
+      <button class="rail-btn" data-page="tutorial" title="教程">
+        <svg viewBox="0 0 24 24"><path d="M5 5h6a2 2 0 012 2v12a2 2 0 00-2-2H5zM19 5h-6a2 2 0 00-2 2v12a2 2 0 012-2h6z"/></svg><small>教程</small>
+      </button>
+      <button class="rail-btn" id="btnAppearance" title="外观设置">
+        <svg viewBox="0 0 24 24"><path d="M12 3a9 9 0 100 18h2a2 2 0 002-2 2 2 0 012-2h1a3 3 0 003-3 9 9 0 00-10-11z"/><circle cx="8" cy="10" r="1.2"/><circle cx="12" cy="7.5" r="1.2"/><circle cx="16" cy="10" r="1.2"/></svg><small>外观</small>
+      </button>
+      <div class="rail-spacer"></div>
+      <button class="rail-btn" id="btnRestartTutorial" title="重新开始教程">
+        <svg viewBox="0 0 24 24"><path d="M4 12a8 8 0 1114 5M4 12V6m0 6h6"/></svg><small>重学</small>
+      </button>
+    </nav>
+
+    <main class="main">
+      <!-- launch -->
+      <section class="page active" id="page-launch">
+        <input type="file" id="modFile" accept=".jar" multiple hidden />
+        <div class="launch-layout">
+          <aside class="launch-side">
+            <div class="user-card">
+              <div class="avatar" id="userAvatar">S</div>
+              <input id="userName" class="user-name" value="Steve" spellcheck="false" />
+            </div>
+
+            <div class="side-label">Minecraft 版本</div>
+            <div class="ver-list" id="launchVersions"><div class="empty">读取中…</div></div>
+
+            <div class="side-label">
+              <span>Mod <span class="count" id="modCount"></span></span>
+              <span class="label-actions">
+                <button class="mini-btn" id="btnAddMod" title="添加 Mod">＋</button>
+                <button class="mini-btn" id="btnOpenMods2" title="打开 mods 目录">▤</button>
+              </span>
+            </div>
+            <div class="ver-list small" id="launchMods"><div class="empty">—</div></div>
+
+            <div class="side-label">存档 <span class="count" id="worldCount"></span></div>
+            <div class="ver-list small" id="launchWorlds"><div class="empty">—</div></div>
+
+            <div class="launch-actions">
+              <button class="primary launch-big" id="btnLaunchBig">启动游戏</button>
+              <div class="mini-actions">
+                <button class="ghost" id="btnVerSettings">版本设置</button>
+                <button class="ghost danger" id="btnVerDelete">删除版本</button>
+              </div>
+            </div>
+          </aside>
+
+          <div class="launch-main" id="launchMain">
+            <div class="empty">选一个版本</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- download center (折叠式) -->
+      <section class="page" id="page-versions">
+        <div class="dl-accordion" id="dlAccordion">
+
+          <section class="dl-section open" data-cat="vanilla">
+            <button class="dl-sec-head">
+              <span class="chev">▾</span>
+              <b>原版游戏</b>
+              <span class="dl-sec-sub">下载客户端，或顺手装上 Fabric / Forge / NeoForge / Quilt / OptiFine</span>
+            </button>
+            <div class="dl-sec-body">
+              <div id="vanillaList">
+                <div class="dl-toolbar">
+                  <input id="versionSearch" class="input" placeholder="搜索版本，如 26.3 / 1.21" />
+                  <button class="ghost" id="btnRefreshVersions">刷新</button>
+                  <span class="muted" id="versionCount"></span>
+                </div>
+                <div id="versionGroups" class="version-groups">
+                  <div class="empty">正在读取 Mojang 版本清单…</div>
+                </div>
+              </div>
+
+              <div id="vanillaInstall" class="install-view" hidden>
+                <button class="ghost" id="btnBackList">← 返回版本列表</button>
+                <div class="install-card">
+                  <div class="install-head">
+                    <span class="install-badge" id="instVersionBadge">26.3</span>
+                    <div>
+                      <div class="install-title" id="instTitle">安装 26.3</div>
+                      <div class="muted" id="instSub">选加载器、改名字，然后点开始安装</div>
+                    </div>
+                  </div>
+
+                  <label class="field"><span>实例名称</span>
+                    <input id="instName" class="input" />
+                  </label>
+
+                  <div class="field"><span>加载器</span>
+                    <div class="loader-picker" id="loaderPicker">
+                      <label class="lp"><input type="radio" name="loader" value="vanilla" checked />
+                        <b>原版</b><small>不装加载器</small></label>
+                      <label class="lp"><input type="radio" name="loader" value="fabric" />
+                        <b>Fabric</b><small>轻量，装完直接能启动</small></label>
+                      <label class="lp"><input type="radio" name="loader" value="quilt" />
+                        <b>Quilt</b><small>Fabric 的分支</small></label>
+                      <label class="lp"><input type="radio" name="loader" value="forge" />
+                        <b>Forge</b><small>老牌，模组最多</small></label>
+                      <label class="lp"><input type="radio" name="loader" value="neoforge" />
+                        <b>NeoForge</b><small>Forge 分支，新版本主流</small></label>
+                      <label class="lp"><input type="radio" name="loader" value="optifine" />
+                        <b>OptiFine</b><small>光影 / 老版本优化</small></label>
+                    </div>
+                  </div>
+
+                  <div class="field" id="loaderVersionField" hidden>
+                    <span>加载器版本</span>
+                    <select id="instLoaderVer" class="input"></select>
+                  </div>
+
+                  <div class="row-gap">
+                    <button class="primary" id="btnStartInstall">开始安装</button>
+                  </div>
+                  <div id="installTip" class="tip"></div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="dl-section" data-cat="mod">
+            <button class="dl-sec-head">
+              <span class="chev">▸</span><b>Mod</b>
+              <span class="dl-sec-sub">下载装进 .minecraft/mods，已装的在下面检查</span>
+            </button>
+            <div class="dl-sec-body" hidden>
+              <div class="mod-installed">
+                <div class="mod-installed-head">
+                  <b>已安装的 Mod</b>
+                  <span class="muted" id="modsCount"></span>
+                  <select id="modsLoader" class="input compact">
+                    <option value="">不确定加载器</option>
+                    <option value="forge">Forge</option>
+                    <option value="fabric">Fabric</option>
+                    <option value="neoforge">NeoForge</option>
+                  </select>
+                  <button class="primary" id="btnCheckMods">检查模组</button>
+                  <button class="ghost" id="btnOpenMods">打开目录</button>
+                </div>
+                <div id="modList" class="mod-list"><div class="empty">展开后自动读取</div></div>
+                <div id="modFindings" class="mod-findings"></div>
+              </div>
+            </div>
+          </section>
+
+          <section class="dl-section" data-cat="modpack">
+            <button class="dl-sec-head">
+              <span class="chev">▸</span><b>整合包</b>
+              <span class="dl-sec-sub">解包成独立实例，自带 mods 和配置</span>
+            </button>
+            <div class="dl-sec-body" hidden></div>
+          </section>
+
+          <section class="dl-section" data-cat="datapack">
+            <button class="dl-sec-head">
+              <span class="chev">▸</span><b>数据包</b>
+              <span class="dl-sec-sub">装到某个存档的 datapacks 里</span>
+            </button>
+            <div class="dl-sec-body" hidden></div>
+          </section>
+
+          <section class="dl-section" data-cat="resourcepack">
+            <button class="dl-sec-head">
+              <span class="chev">▸</span><b>资源包</b>
+              <span class="dl-sec-sub">装进 resourcepacks，游戏里启用</span>
+            </button>
+            <div class="dl-sec-body" hidden></div>
+          </section>
+
+          <section class="dl-section" data-cat="shader">
+            <button class="dl-sec-head">
+              <span class="chev">▸</span><b>光影包</b>
+              <span class="dl-sec-sub">装进 shaderpacks，需要 Iris / OptiFine</span>
+            </button>
+            <div class="dl-sec-body" hidden></div>
+          </section>
+
+          <!-- 社区资源面板只有一个，展开哪个分类就搬到哪个分类里 -->
+          <div id="dl-market" hidden>
+            <div class="dl-toolbar">
+              <input id="marketQuery" class="input" placeholder="搜名字，比如 sodium / create / iris" />
+              <input id="marketMc" class="input compact" placeholder="游戏版本，留空=不限" />
+              <select id="marketLoader" class="input compact">
+                <option value="">任意加载器</option>
+                <option value="fabric">Fabric</option>
+                <option value="quilt">Quilt</option>
+                <option value="forge">Forge</option>
+                <option value="neoforge">NeoForge</option>
+              </select>
+              <select id="marketWorld" class="input compact" hidden></select>
+              <button class="primary" id="btnMarketSearch">搜索</button>
+            </div>
+            <div class="market-hint muted" id="marketHint"></div>
+            <div id="marketList" class="market-list"><div class="empty">加载中…</div></div>
+            <div class="market-foot muted" id="marketFoot"></div>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- java -->
+      <section class="page" id="page-java">
+        <div class="page-head">
+          <div>
+            <h1>Java 运行时</h1>
+            <p class="muted">本机已装的 JDK 会列在这里，也可以直接下载新的。</p>
+          </div>
+          <div class="head-actions"><button class="ghost" id="btnRescanJava">重新扫描</button></div>
+        </div>
+        <div class="split">
+          <div class="card list-card">
+            <div class="card-head"><span>本机 JDK</span></div>
+            <div class="list" id="javaList"><div class="empty">扫描中…</div></div>
+          </div>
+          <div class="card side-card">
+            <div class="card-head"><span>在线安装</span></div>
+            <div class="list" id="javaRemote"><div class="empty">读取中…</div></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- code editor -->
+      <section class="page" id="page-code">
+        <div class="page-head">
+          <div>
+            <h1>代码</h1>
+            <p class="muted" id="codeProjectPath">工程：读取中…</p>
+          </div>
+          <div class="head-actions">
+            <input id="newFileName" class="input compact" placeholder="新文件名，如 Foo.java" />
+            <button class="ghost" id="btnNewFile">新建文件</button>
+            <button class="ghost" id="btnDecompile" hidden>反编译 (javap)</button>
+                  <button class="primary" id="btnSaveFile">保存 (Ctrl+S)</button>
+          </div>
+        </div>
+        <div class="editor-wrap">
+          <div class="card file-tree-card">
+            <div class="card-head"><span>工程文件</span><span class="muted" id="fileCount"></span></div>
+            <div class="file-tree" id="fileTree"><div class="empty">读取中…</div></div>
+          </div>
+          <div class="card editor-card">
+            <div class="card-head"><span id="editorTitle">未打开文件</span><span class="muted" id="editorStatus"></span></div>
+            <textarea id="editor" class="editor" spellcheck="false" placeholder="// 从左边选一个 .java 文件，或者新建一个"></textarea>
+          </div>
+        </div>
+      </section>
+
+      <!-- build -->
+      <section class="page" id="page-build">
+        <div class="page-head">
+          <div>
+            <h1>构建</h1>
+            <p class="muted">内置 javac：编译 → 打包 jar → 直接运行，全在这里。</p>
+          </div>
+          <div class="head-actions">
+            <select id="compilerSelect" class="input"></select>
+          </div>
+        </div>
+        <div class="split">
+          <div class="card">
+            <div class="card-head"><span>操作</span></div>
+            <div class="pad">
+              <div class="field"><span>主类（打包和运行都要用）</span>
+                <input id="mainClass" class="input" value="com.example.Main" />
+              </div>
+              <div class="field"><span>jar 文件名</span>
+                <input id="jarName" class="input" value="mymod.jar" />
+              </div>
+              <div class="btn-row">
+                <button class="primary" id="btnCompile">编译</button>
+                <button class="primary" id="btnPackage">打包 jar</button>
+                <button class="primary" id="btnRun">运行</button>
+              </div>
+              <div id="buildSummary" class="build-summary"><span class="muted">还没编译过</span></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head"><span>诊断</span><span class="muted" id="diagCount"></span></div>
+            <div class="list" id="diagnostics"><div class="empty">编译后这里会列出错误和中文解释</div></div>
+          </div>
+        </div>
+        <div class="card libs-card">
+          <div class="card-head"><span>模组编译依赖（libs）</span><span class="muted" id="libsCount"></span></div>
+          <div class="pad">
+            <div class="row-gap">
+              <select id="libsVersion" class="input"></select>
+              <button class="primary" id="btnImportLibs">一键导入到 libs</button>
+            </div>
+            <div id="libsStatus" class="build-summary"><span class="muted">读取中…</span></div>
+            <p class="tip">会把该版本的依赖库 + 反混淆的 Forge/MC jar 链接进工程 libs/，之后「编译」就能 import net.minecraft.* 了。</p>
+          </div>
+        </div>
+        <div class="card console-card">
+          <div class="card-head"><span>控制台</span><button class="ghost tiny" id="btnClearConsole2">清空</button></div>
+          <pre id="console2" class="console"></pre>
+        </div>
+      </section>
+
+      <!-- tools -->
+      <section class="page" id="page-tools">
+        <div class="page-head">
+          <div>
+            <h1>工具箱</h1>
+            <p class="muted">解析 jar、看日志、把报错翻译成人话。</p>
+          </div>
+        </div>
+        <div class="tools-grid">
+          <div class="card">
+            <div class="card-head"><span>Jar 解析</span></div>
+            <div class="pad">
+              <div class="row-gap">
+                <input id="jarPath" class="input" placeholder="粘贴 jar 路径，或点右边选一个模组" />
+                <button class="primary" id="btnParseJar">解析</button>
+              </div>
+              <div id="jarResult" class="result"><div class="empty">还没有解析</div></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head"><span>报错诊断</span></div>
+            <div class="pad">
+              <div class="row-gap">
+                <textarea id="logText" class="input area" placeholder="粘贴崩溃日志，或直接点「分析最新日志」"></textarea>
+              </div>
+              <div class="row-gap">
+                <button class="primary" id="btnAnalyzeLatest">分析最新日志</button>
+                <button class="ghost" id="btnAnalyzeText">分析上面这段</button>
+              </div>
+              <div id="analyzeResult" class="result"><div class="empty">还没有结果</div></div>
+            </div>
+          </div>
+        </div>
+        <div class="card console-card">
+          <div class="card-head"><span>控制台</span><button class="ghost tiny" id="btnClearConsole">清空</button></div>
+          <pre id="console" class="console"></pre>
+        </div>
+      </section>
+
+      <!-- tutorial -->
+      <section class="page" id="page-tutorial">
+        <div class="page-head">
+          <div>
+            <h1>教程</h1>
+            <p class="muted">「步骤」教你把工程跑起来；「代码课」从零教你写 Java，7 课，每课都能一键写入并编译。</p>
+          </div>
+          <div class="head-actions">
+            <button class="ghost" id="btnNewProject">新建工程</button>
+            <button class="ghost" id="btnRestartTutorial2">从头开始</button>
+          </div>
+        </div>
+
+        <div class="tabs" id="tutTabs">
+          <button class="tab active" data-tut="steps">步骤教程</button>
+          <button class="tab" data-tut="lessons">代码课</button>
+        </div>
+
+        <div id="tut-steps">
+          <div class="card">
+            <div class="card-head"><span>进度</span><span class="muted" id="tutorialProgress"></span></div>
+            <div class="steps" id="tutorialSteps"></div>
+          </div>
+
+          <div class="card tutorial-detail">
+            <div class="card-head"><span id="tdTitle">当前这一步怎么做</span></div>
+            <div class="pad">
+              <p class="td-purpose" id="tdPurpose"></p>
+              <ol class="td-actions" id="tdActions"></ol>
+              <div class="row-gap" id="tdCodeWrap" hidden>
+                <button class="primary" id="btnWriteCode">写入示例代码</button>
+                <button class="ghost" id="btnOpenCode">在「代码」页打开</button>
+              </div>
+              <pre class="code-block" id="tdCode" hidden></pre>
+            </div>
+          </div>
+        </div>
+
+        <div id="tut-lessons" hidden>
+          <div class="split lessons-split">
+            <div class="card">
+              <div class="card-head"><span>课程</span><span class="muted" id="lessonCount"></span></div>
+              <div class="list" id="lessonList"><div class="empty">读取中…</div></div>
+            </div>
+            <div class="card lesson-body-card">
+              <div class="card-head"><span id="lessonTitle">选一课开始</span></div>
+              <div class="pad lesson-body" id="lessonBody"><div class="empty">左边选一课</div></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+
+    <aside class="wiki">
+      <div class="wiki-head">
+        <span>Wiki 速查</span>
+      </div>
+      <div class="wiki-body" id="wikiList"></div>
+      <div class="wiki-foot">
+        <div class="tip-title">小提示</div>
+        <p class="tip" id="wikiTip">26.3 的方块注册要用 <code>BlockBehaviour.Properties.of().setId(...)</code>，漏了 set 会直接崩。</p>
+      </div>
+    </aside>
+  </div>
+
+  <footer class="statusbar">
+    <div class="status-left">
+      <span class="dot" id="statusDot"></span>
+      <span id="statusText">就绪</span>
+    </div>
+    <div class="status-progress">
+      <div class="bar"><div class="bar-fill" id="barFill"></div></div>
+      <span id="progressText"></span>
+    </div>
+    <div class="status-right" id="clock"></div>
+  </footer>
+
+  <div class="tutorial-bar" id="tutorialBar">
+    <div class="tb-left">
+      <span class="tb-badge" id="tbStep">步骤 1/7</span>
+      <div class="tb-text">
+        <b id="tbTitle">装一个 JDK</b>
+        <span id="tbHint">到「Java」页下载 JDK 25。</span>
+      </div>
+    </div>
+    <div class="tb-right">
+      <span class="tb-done" id="tbDone" hidden>完成！</span>
+      <button class="primary" id="btnTutorialNext" disabled>下一步</button>
+      <button class="ghost" id="btnTutorialCancel">取消教程</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal" id="modal" hidden>
+  <div class="modal-box">
+    <div class="modal-head"><b id="modalTitle">设置</b><button class="ghost tiny" id="modalClose">×</button></div>
+    <div class="modal-body" id="modalBody"></div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
