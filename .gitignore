@@ -1,0 +1,29 @@
+# 运行时数据（不进仓库）
+config.json
+server.log
+setup.log
+theme-bg.img
+cache/
+workspace/
+moddev/
+dist/
+repo/
+node_modules/
+__pycache__/
+*.pyc
+*.log
+
+# 编辑器 / 系统
+.vs/
+.vscode/
+.idea/
+*.user
+Thumbs.db
+desktop.ini
+
+# 构建产物
+*.exe
+!dist/*Setup.exe
+*.dll
+!src/native/*.dll
+*.pdb
