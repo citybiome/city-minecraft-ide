@@ -828,6 +828,90 @@ code {
 }
 .upd-file { margin-top: 10px; font-size: 11.5px; color: var(--muted); }
 
+
+/* ---------------- 代码片段面板 (F5) ---------------- */
+.pal-modal {
+  position: fixed; inset: 0; z-index: 120;
+  background: rgba(4, 7, 11, .55);
+  backdrop-filter: blur(3px);
+  display: grid; place-items: start center; padding-top: 11vh;
+}
+.pal-box {
+  width: min(880px, 94vw); height: min(540px, 72vh);
+  display: flex; flex-direction: column;
+  background: var(--panel); border: 1px solid var(--line-2); border-radius: 14px;
+  overflow: hidden; box-shadow: 0 30px 80px rgba(0,0,0,.62);
+  animation: palIn .16s cubic-bezier(.2,.8,.2,1);
+}
+@keyframes palIn { from { opacity: 0; transform: translateY(-10px) scale(.99); } }
+.pal-head {
+  display: flex; gap: 10px; align-items: center;
+  padding: 10px 12px; border-bottom: 1px solid var(--line); background: var(--panel-2);
+}
+.pal-tabs { display: flex; gap: 4px; }
+.pal-tab {
+  border: 0; background: transparent; color: var(--muted);
+  font-size: 12.5px; padding: 6px 10px; border-radius: 7px; cursor: pointer;
+}
+.pal-tab:hover { color: var(--text); }
+.pal-tab.on { background: #1d2b3d; color: #8ec0ff; }
+.pal-input {
+  flex: 1 1 auto; min-width: 0;
+  background: #0f141a; border: 1px solid var(--line); border-radius: 8px;
+  color: var(--text); padding: 8px 10px; font-size: 13px; outline: none;
+}
+.pal-input:focus { border-color: var(--accent); }
+.pal-x {
+  border: 0; background: transparent; color: var(--muted);
+  font-size: 18px; width: 30px; height: 30px; border-radius: 8px; cursor: pointer; line-height: 1;
+}
+.pal-x:hover { background: #202a36; color: #fff; }
+.pal-body { flex: 1 1 auto; display: grid; grid-template-columns: 116px minmax(0, 1fr) minmax(0, 1.05fr); min-height: 0; }
+.pal-side {
+  border-right: 1px solid var(--line); padding: 8px; overflow: auto;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.pal-cat {
+  border: 0; background: transparent; color: var(--muted); text-align: left;
+  font-size: 12px; padding: 6px 8px; border-radius: 7px; cursor: pointer;
+}
+.pal-cat:hover { background: #171f2a; color: var(--text); }
+.pal-cat.on { background: #1d2b3d; color: #8ec0ff; }
+.pal-list { overflow: auto; border-right: 1px solid var(--line); }
+.pal-item { padding: 8px 12px; border-bottom: 1px solid #161d27; cursor: pointer; }
+.pal-item.on { background: #1a2433; }
+.pal-name { font-size: 12.5px; }
+.pal-desc { color: var(--muted); font-size: 11px; margin-left: 6px; }
+.pal-tag { color: #5f6d80; font-size: 11px; margin-top: 2px; font-family: Consolas, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pal-prev {
+  margin: 0; padding: 12px; overflow: auto; background: #0b0f14;
+  font: 11.5px/1.65 Consolas, "Cascadia Mono", monospace; color: #93a7bd; white-space: pre;
+}
+.pal-foot {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 8px 12px; border-top: 1px solid var(--line);
+  color: var(--muted); font-size: 11.5px; background: var(--panel-2);
+}
+.pal-insert {
+  background: var(--accent); border: 0; color: #fff; font-weight: 600;
+  padding: 7px 16px; border-radius: 8px; font-size: 12.5px; cursor: pointer;
+}
+.pal-insert:hover { filter: brightness(1.1); }
+.pal-empty { padding: 20px; color: var(--muted); font-size: 12px; }
+
+
+/* ---------------- bbmodel 转换 ---------------- */
+.bb-sum { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.bb-files { margin: 6px 0; padding-left: 18px; font: 11.5px/1.7 Consolas, monospace; color: #93a7bd; max-height: 160px; overflow: auto; }
+.bb-warn { background: #221b10; border: 1px solid #3a2f1c; border-radius: 8px; padding: 8px 10px; margin: 8px 0; }
+.bb-warn b { color: #e2a336; font-size: 12px; }
+.bb-warn ul { margin: 6px 0 0; padding-left: 18px; color: #b9a67e; font-size: 11.5px; }
+.bb-code {
+  background: #0b0f14; border: 1px solid var(--line); border-radius: 8px;
+  padding: 10px 12px; font: 11.5px/1.65 Consolas, monospace; color: #a9c6ff;
+  max-height: 180px; overflow: auto; white-space: pre;
+}
+
 /* ---------------- scrollbars ---------------- */
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
