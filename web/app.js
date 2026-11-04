@@ -520,6 +520,9 @@ async function boot() {
   }
 
   if (params.get("tut")) switchTutTab(params.get("tut"));
+  if (params.get("palette") === "1") {
+    setTimeout(() => openPal(), 1500);
+  }
   if (params.get("appearance") === "1") {
     setTimeout(() => openAppearance(), 1400);
   }
@@ -1380,6 +1383,414 @@ function escapeHtml(t) {
   return String(t || "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
 }
 
+/* ------------------------------------------------------------------ code palette (F5) */
+const SNIPPETS = [
+  // 常用
+  { id: "main", cat: "常用", name: "main 方法", desc: "程序入口", code: "public static void main(String[] args) {\n    {{c}}\n}" },
+  { id: "print", cat: "常用", name: "打印输出", desc: "System.out.println", code: "System.out.println({{c}});" },
+  { id: "ifelse", cat: "常用", name: "if / else", desc: "条件判断", code: "if ({{c}}) {\n    \n} else {\n    \n}" },
+  { id: "for", cat: "常用", name: "for 循环", desc: "从 0 到 n", code: "for (int i = 0; i < {{c}}; i++) {\n    \n}" },
+  { id: "foreach", cat: "常用", name: "for-each", desc: "遍历集合", code: "for (var item : {{c}}) {\n    \n}" },
+  { id: "while", cat: "常用", name: "while 循环", desc: "条件循环", code: "while ({{c}}) {\n    \n}" },
+  { id: "try", cat: "常用", name: "try / catch", desc: "异常处理 + 打印堆栈", code: "try {\n    {{c}}\n} catch (Exception e) {\n    e.printStackTrace();\n}" },
+  { id: "switch", cat: "常用", name: "switch 表达式", desc: "Java 14+ 箭头写法", code: "String result = switch ({{c}}) {\n    case 1 -> \"一\";\n    case 2 -> \"二\";\n    default -> \"其他\";\n};" },
+
+  // 类与对象
+  { id: "class", cat: "类与对象", name: "类骨架", desc: "字段 + 构造 + 方法", code: "public class {{c}} {\n    private final String name;\n\n    public {{c}}(String name) {\n        this.name = name;\n    }\n\n    public String getName() {\n        return name;\n    }\n}" },
+  { id: "record", cat: "类与对象", name: "record", desc: "不可变数据类", code: "public record {{c}}(int x, int y) {\n    public int sum() {\n        return x + y;\n    }\n}" },
+  { id: "interface", cat: "类与对象", name: "接口 + 实现", desc: "interface / implements", code: "public interface {{c}} {\n    void run();\n}\n\nclass Impl implements {{c}} {\n    @Override\n    public void run() {\n        \n    }\n}" },
+  { id: "enum", cat: "类与对象", name: "枚举", desc: "带字段的枚举", code: "public enum {{c}} {\n    A(1), B(2);\n\n    private final int value;\n\n    {{c}}(int value) {\n        this.value = value;\n    }\n\n    public int value() {\n        return value;\n    }\n}" },
+  { id: "override", cat: "类与对象", name: "重写方法", desc: "@Override + super", code: "@Override\npublic {{c}}() {\n    super();\n}" },
+
+  // 集合与字符串
+  { id: "list", cat: "集合与字符串", name: "ArrayList", desc: "建列表 + 添加 + 遍历", code: "List<String> list = new ArrayList<>();\nlist.add({{c}});\nfor (String s : list) {\n    System.out.println(s);\n}" },
+  { id: "map", cat: "集合与字符串", name: "HashMap 遍历", desc: "entrySet 遍历", code: "Map<String, Integer> map = new HashMap<>();\nmap.put({{c}}, 1);\nfor (Map.Entry<String, Integer> e : map.entrySet()) {\n    System.out.println(e.getKey() + \" = \" + e.getValue());\n}" },
+  { id: "stream", cat: "集合与字符串", name: "Stream 过滤", desc: "filter + collect", code: "List<String> result = list.stream()\n        .filter(s -> s.contains({{c}}))\n        .collect(Collectors.toList());" },
+  { id: "format", cat: "集合与字符串", name: "字符串格式化", desc: "String.format", code: "String s = String.format(\"%s: %d\", {{c}}, 0);" },
+  { id: "sb", cat: "集合与字符串", name: "StringBuilder 拼接", desc: "循环拼接", code: "StringBuilder sb = new StringBuilder();\nfor (String s : {{c}}) {\n    sb.append(s).append('\\n');\n}\nString out = sb.toString();" },
+
+  // 文件与网络
+  { id: "readfile", cat: "文件与网络", name: "读文本文件", desc: "Files.readString", code: "Path path = Path.of({{c}});\nString text = Files.readString(path);" },
+  { id: "writefile", cat: "文件与网络", name: "写文本文件", desc: "Files.writeString", code: "Path path = Path.of({{c}});\nFiles.writeString(path, \"内容\", StandardCharsets.UTF_8);" },
+  { id: "readlines", cat: "文件与网络", name: "逐行读取", desc: "BufferedReader", code: "try (BufferedReader r = Files.newBufferedReader(Path.of({{c}}))) {\n    String line;\n    while ((line = r.readLine()) != null) {\n        System.out.println(line);\n    }\n}" },
+  { id: "http", cat: "文件与网络", name: "HTTP GET", desc: "java.net.http 请求", code: "HttpClient client = HttpClient.newHttpClient();\nHttpRequest req = HttpRequest.newBuilder(URI.create({{c}})).GET().build();\nHttpResponse<String> res = client.send(req, HttpResponse.BodyHandlers.ofString());\nSystem.out.println(res.statusCode() + \" \" + res.body());" },
+
+  // Minecraft
+  { id: "block", cat: "Minecraft", name: "方块类", desc: "Block 子类 + 属性", code: "public class {{c}} extends Block {\n    public {{c}}() {\n        super(Properties.of()\n                .setId(ResourceKey.create(Registries.BLOCK, Identifier.fromNamespaceAndPath(\"mymod\", \"{{c}}\")))\n                .strength(3.0f, 6.0f)\n                .requiresCorrectToolForDrops());\n    }\n}" },
+  { id: "item", cat: "Minecraft", name: "物品类", desc: "Item 子类", code: "public class {{c}} extends Item {\n    public {{c}}() {\n        super(new Item.Properties().stacksTo(16));\n    }\n}" },
+  { id: "blockentity", cat: "Minecraft", name: "BlockEntity 骨架", desc: "含保存/加载", code: "public class {{c}} extends BlockEntity {\n    private int count = 0;\n\n    public {{c}}(BlockPos pos, BlockState state) {\n        super(ModBlockEntities.{{c}}.get(), pos, state);\n    }\n\n    @Override\n    protected void saveAdditional(ValueOutput out) {\n        super.saveAdditional(out);\n        out.putInt(\"count\", count);\n    }\n\n    @Override\n    protected void loadAdditional(ValueInput in) {\n        super.loadAdditional(in);\n        count = in.getIntOr(\"count\", 0);\n    }\n}" },
+  { id: "forgeevent", cat: "Minecraft", name: "Forge 事件订阅", desc: "@SubscribeEvent 方法", code: "@SubscribeEvent\npublic static void on{{c}}(PlayerEvent.PlayerLoggedInEvent event) {\n    System.out.println(\"玩家登录：\" + event.getEntity().getName().getString());\n}" },
+  { id: "deferred", cat: "Minecraft", name: "DeferredRegister", desc: "注册方块/物品", code: "public static final DeferredRegister.Blocks BLOCKS =\n        DeferredRegister.createBlocks(\"{{c}}\");\n\npublic static final DeferredBlock<Block> EXAMPLE = BLOCKS.register(\"example\",\n        () -> new Block(BlockBehaviour.Properties.of().setId(ResourceKey.create(\n                Registries.BLOCK, Identifier.fromNamespaceAndPath(\"{{c}}\", \"example\")))));" },
+
+  // Fabric
+  { id: "fabricentry", cat: "Fabric", name: "Fabric 入口", desc: "ModInitializer", code: "public class {{c}} implements ModInitializer {\n    public static final String MOD_ID = \"{{c}}\";\n\n    @Override\n    public void onInitialize() {\n        Registry.register(Registries.BLOCK, Identifier.of(MOD_ID, \"example\"), BLOCK);\n    }\n}" },
+  { id: "fabricblock", cat: "Fabric", name: "Fabric 注册方块", desc: "Registry.register", code: "public static final Block EXAMPLE = new Block(AbstractBlock.Settings.create().strength(3.0f));" },
+
+  // Forge
+  { id: "forge_main", cat: "Forge", name: "模组主类 @Mod", desc: "Forge 入口 + 事件总线", code: "@Mod({{c}})\npublic class MyMod {\n    public MyMod(IEventBus modBus, ModContainer container) {\n        ModBlocks.BLOCKS.register(modBus);\n        modBus.addListener(this::commonSetup);\n    }\n\n    private void commonSetup(final FMLCommonSetupEvent event) {\n        \n    }\n}" },
+  { id: "forge_blocks", cat: "Forge", name: "注册方块", desc: "DeferredRegister.Blocks", code: "public static final DeferredRegister.Blocks BLOCKS =\n        DeferredRegister.createBlocks(\"{{c}}\");\n\npublic static final DeferredBlock<Block> EXAMPLE = BLOCKS.register(\"example\",\n        () -> new Block(BlockBehaviour.Properties.of()\n                .setId(ResourceKey.create(Registries.BLOCK,\n                        Identifier.fromNamespaceAndPath(\"{{c}}\", \"example\")))));" },
+  { id: "forge_items", cat: "Forge", name: "注册物品", desc: "DeferredRegister.Items", code: "public static final DeferredRegister.Items ITEMS =\n        DeferredRegister.createItems(\"{{c}}\");\n\npublic static final DeferredItem<Item> EXAMPLE = ITEMS.registerSimpleItem(\"example\",\n        new Item.Properties().stacksTo(16));" },
+  { id: "forge_event", cat: "Forge", name: "@SubscribeEvent", desc: "监听玩家登录", code: "@SubscribeEvent\npublic static void onPlayerJoin(PlayerEvent.PlayerLoggedInEvent event) {\n    {{c}}\n    System.out.println(\"登录：\" + event.getEntity().getName().getString());\n}" },
+  { id: "forge_tab", cat: "Forge", name: "创造模式标签页", desc: "CreativeModeTab", code: "public static final DeferredRegister<CreativeModeTab> TABS =\n        DeferredRegister.create(Registries.CREATIVE_MODE_TAB, \"{{c}}\");\n\npublic static final Supplier<CreativeModeTab> TAB = TABS.register(\"main\",\n        () -> CreativeModeTab.builder()\n                .title(Component.translatable(\"itemGroup.{{c}}\"))\n                .icon(() -> new ItemStack(ModItems.EXAMPLE.get()))\n                .displayItems((params, output) -> output.accept(ModItems.EXAMPLE.get()))\n                .build());" },
+  { id: "forge_config", cat: "Forge", name: "配置文件", desc: "ForgeConfigSpec", code: "public static final ForgeConfigSpec.Builder BUILDER = new ForgeConfigSpec.Builder();\npublic static final ForgeConfigSpec.IntValue {{c}} = BUILDER\n        .comment(\"说明写这里\")\n        .defineInRange(\"value\", 10, 1, 100);\npublic static final ForgeConfigSpec SPEC = BUILDER.build();" },
+
+  // NeoForge
+  { id: "neo_main", cat: "NeoForge", name: "模组主类 @Mod", desc: "NeoForge 入口", code: "@Mod({{c}})\npublic class MyMod {\n    public MyMod(IEventBus modBus, ModContainer container) {\n        ModBlocks.BLOCKS.register(modBus);\n        modBus.addListener(this::commonSetup);\n    }\n\n    private void commonSetup(final FMLCommonSetupEvent event) {\n        \n    }\n}" },
+  { id: "neo_blocks", cat: "NeoForge", name: "注册方块", desc: "DeferredRegister.Blocks", code: "public static final DeferredRegister.Blocks BLOCKS =\n        DeferredRegister.createBlocks(\"{{c}}\");\n\npublic static final DeferredBlock<Block> EXAMPLE = BLOCKS.register(\"example\",\n        () -> new Block(BlockBehaviour.Properties.of()\n                .setId(ResourceKey.create(Registries.BLOCK,\n                        Identifier.fromNamespaceAndPath(\"{{c}}\", \"example\")))));" },
+  { id: "neo_items", cat: "NeoForge", name: "注册物品", desc: "DeferredRegister.Items", code: "public static final DeferredRegister.Items ITEMS =\n        DeferredRegister.createItems(\"{{c}}\");\n\npublic static final DeferredItem<Item> EXAMPLE = ITEMS.registerSimpleItem(\"example\",\n        new Item.Properties());" },
+  { id: "neo_events", cat: "NeoForge", name: "事件订阅类", desc: "@EventBusSubscriber", code: "@EventBusSubscriber(modid = \"{{c}}\")\npublic class ModEvents {\n    @SubscribeEvent\n    public static void onJoin(PlayerEvent.PlayerLoggedInEvent event) {\n        \n    }\n}" },
+  { id: "neo_blockentity", cat: "NeoForge", name: "BlockEntity 注册", desc: "DeferredRegister + Builder", code: "public static final DeferredRegister<BlockEntityType<?>> BLOCK_ENTITIES =\n        DeferredRegister.create(Registries.BLOCK_ENTITY_TYPE, \"{{c}}\");\n\npublic static final Supplier<BlockEntityType<ExampleBlockEntity>> EXAMPLE =\n        BLOCK_ENTITIES.register(\"example\",\n                () -> new BlockEntityType<>(ExampleBlockEntity::new, ModBlocks.EXAMPLE.get()));" },
+
+  // Quilt
+  { id: "quilt_entry", cat: "Quilt", name: "Quilt 入口", desc: "QuiltModInitializer", code: "public class {{c}} implements QuiltModInitializer {\n    @Override\n    public void onInitialize(ModContainer mod) {\n        Registry.register(Registries.BLOCK,\n                Identifier.of(\"{{c}}\", \"example\"), BLOCK);\n    }\n}" },
+  { id: "quilt_manifest", cat: "Quilt", name: "quilt.mod.json", desc: "Quilt 的模组描述文件", code: "{\n  \"schema_version\": 1,\n  \"quilt_loader\": {\n    \"group\": \"com.example\",\n    \"id\": \"{{c}}\",\n    \"version\": \"1.0.0\",\n    \"metadata\": {\n      \"name\": \"Example Mod\",\n      \"description\": \"说明\"\n    },\n    \"entrypoints\": {\n      \"init\": \"com.example.ExampleMod\"\n    }\n  }\n}" },
+  { id: "quilt_register", cat: "Quilt", name: "注册方块/物品", desc: "Registry.register", code: "public static final Block EXAMPLE = new Block(AbstractBlock.Settings.create().strength(3.0f));\n\n// onInitialize 里：\nRegistry.register(Registries.BLOCK, Identifier.of(\"{{c}}\", \"example\"), EXAMPLE);\nRegistry.register(Registries.ITEM, Identifier.of(\"{{c}}\", \"example\"),\n        new BlockItem(EXAMPLE, new Item.Settings()));" },
+
+  // 构建
+  { id: "build_forge", cat: "构建", name: "build.gradle · Forge", desc: "ForgeGradle 7", code: "plugins {\n    id 'net.minecraftforge.gradle' version '[7.0,7.2)'\n}\n\nminecraft {\n    mappings channel: 'official', version: '{{c}}'\n}" },
+  { id: "build_neo", cat: "构建", name: "build.gradle · NeoForge", desc: "ModDevGradle", code: "plugins {\n    id 'net.neoforged.moddev' version '2.0.78'\n}\n\nneoForge {\n    version = '{{c}}'\n}" },
+  { id: "build_fabric", cat: "构建", name: "build.gradle · Fabric", desc: "fabric-loom", code: "plugins {\n    id 'fabric-loom' version '1.7-SNAPSHOT'\n}\n\ndependencies {\n    minecraft \"com.mojang:minecraft:{{c}}\"\n    mappings \"net.fabricmc:yarn:{{c}}+build.1:v2\"\n}" },
+  { id: "build_quilt", cat: "构建", name: "build.gradle · Quilt", desc: "quilt-loom", code: "plugins {\n    id 'org.quiltmc.loom' version '1.7-SNAPSHOT'\n}\n\ndependencies {\n    minecraft \"com.mojang:minecraft:{{c}}\"\n    mappings \"org.quiltmc:quilt-mappings:{{c}}+build.1:v2\"\n}" },
+
+  // 调试
+  { id: "bench", cat: "调试", name: "计时一段代码", desc: "System.nanoTime", code: "long t0 = System.nanoTime();\n{{c}}\nSystem.out.println(\"耗时 \" + ((System.nanoTime() - t0) / 1_000_000) + \" ms\");" },
+  { id: "assert", cat: "调试", name: "断言/输出对象", desc: "打印变量与类型", code: "System.out.println({{c}} + \"  [\" + ({{c}} != null ? {{c}}.getClass().getSimpleName() : \"null\") + \"]\");" },
+];
+
+let palState = { open: false, mode: "template", q: "", cat: "全部", idx: 0, list: [], results: [] };
+
+function palCats() {
+  const cats = ["全部"];
+  for (const s of SNIPPETS) if (!cats.includes(s.cat)) cats.push(s.cat);
+  return cats;
+}
+
+function palFilter() {
+  const q = palState.q.trim().toLowerCase();
+  let list = SNIPPETS;
+  if (palState.cat !== "全部") list = list.filter((s) => s.cat === palState.cat);
+  if (q) {
+    list = list.filter((s) =>
+      (s.name + " " + s.desc + " " + s.code + " " + s.cat + " " + s.id).toLowerCase().includes(q));
+  }
+  return list;
+}
+
+function palRender() {
+  const box = $("#palModal");
+  if (!box) return;
+  const listEl = box.querySelector("#palList");
+  const prevEl = box.querySelector("#palPrev");
+  const catsEl = box.querySelector("#palCats");
+
+  catsEl.innerHTML = palCats().map((c) =>
+    `<button class="pal-cat${c === palState.cat ? " on" : ""}" data-cat="${c}">${c}</button>`).join("");
+  catsEl.querySelectorAll(".pal-cat").forEach((b) => {
+    b.onclick = () => { palState.cat = b.dataset.cat; palState.idx = 0; refreshPal(); };
+  });
+
+  if (palState.mode === "template") {
+    palState.list = palFilter();
+    if (!palState.list.length) {
+      listEl.innerHTML = `<div class="pal-empty">没有匹配的片段</div>`;
+      prevEl.textContent = "";
+      return;
+    }
+    palState.idx = Math.min(palState.idx, palState.list.length - 1);
+    listEl.innerHTML = palState.list.map((s, i) => `
+      <div class="pal-item${i === palState.idx ? " on" : ""}" data-i="${i}">
+        <div class="pal-name">${s.name}${s.desc ? `<span class="pal-desc">${s.desc}</span>` : ""}</div>
+        <div class="pal-tag">${s.cat}</div>
+      </div>`).join("");
+    listEl.querySelectorAll(".pal-item").forEach((el) => {
+      el.onmouseenter = () => { palState.idx = +el.dataset.i; refreshPal(); };
+      el.onclick = () => { palState.idx = +el.dataset.i; palInsert(); };
+    });
+    const cur = palState.list[palState.idx];
+    prevEl.textContent = cur ? cur.code.replace(/\{\{c\}\}/g, "") : "";
+    const on = listEl.querySelector(".pal-item.on");
+    if (on) on.scrollIntoView({ block: "nearest" });
+  } else {
+    const res = palState.results;
+    if (!palState.q.trim()) {
+      listEl.innerHTML = `<div class="pal-empty">输入两个字符以上，搜索工程里的代码</div>`;
+      prevEl.textContent = "";
+      return;
+    }
+    if (!res.length) {
+      listEl.innerHTML = `<div class="pal-empty">工程里没搜到“${palState.q}”</div>`;
+      prevEl.textContent = "";
+      return;
+    }
+    palState.idx = Math.min(palState.idx, res.length - 1);
+    listEl.innerHTML = res.map((r, i) => `
+      <div class="pal-item${i === palState.idx ? " on" : ""}" data-i="${i}">
+        <div class="pal-name">${r.text}</div>
+        <div class="pal-tag">${r.path}:${r.line}</div>
+      </div>`).join("");
+    listEl.querySelectorAll(".pal-item").forEach((el) => {
+      el.onmouseenter = () => { palState.idx = +el.dataset.i; refreshPal(); };
+      el.onclick = () => palOpenResult(+el.dataset.i);
+    });
+    prevEl.textContent = res[palState.idx] ? res[palState.idx].path + " : " + res[palState.idx].line : "";
+    const on2 = listEl.querySelector(".pal-item.on");
+    if (on2) on2.scrollIntoView({ block: "nearest" });
+  }
+}
+
+let palTimer = null;
+function refreshPal(immediate) {
+  if (palState.mode === "project") {
+    clearTimeout(palTimer);
+    palTimer = setTimeout(async () => {
+      const q = palState.q.trim();
+      if (q.length < 2) { palState.results = []; palRender(); return; }
+      try {
+        const r = await api("/api/search?q=" + encodeURIComponent(q));
+        palState.results = r.results || [];
+      } catch { palState.results = []; }
+      palRender();
+    }, immediate ? 0 : 220);
+  } else {
+    palRender();
+  }
+}
+
+async function palOpenResult(i) {
+  const r = palState.results[i];
+  if (!r) return;
+  closePal();
+  await openFile(r.path);
+  const ed = $("#editor");
+  const lines = ed.value.split("\n");
+  let pos = 0;
+  for (let k = 0; k < Math.min(r.line - 1, lines.length); k++) pos += lines[k].length + 1;
+  ed.focus();
+  ed.setSelectionRange(pos, pos + (lines[r.line - 1] || "").length);
+  const lh = 21;
+  ed.scrollTop = Math.max(0, (r.line - 4) * lh);
+  setStatus(`${r.path}:${r.line}`, "ok");
+}
+
+function openPal(mode) {
+  if (palState.open) { closePal(); return; }
+  palState = { open: true, mode: mode || "template", q: "", cat: "全部", idx: 0, list: [], results: [] };
+
+  const wrap = document.createElement("div");
+  wrap.className = "pal-modal";
+  wrap.id = "palModal";
+  wrap.innerHTML = `
+    <div class="pal-box">
+      <div class="pal-head">
+        <div class="pal-tabs">
+          <button class="pal-tab on" data-mode="template">代码片段</button>
+          <button class="pal-tab" data-mode="project">搜索工程</button>
+        </div>
+        <input id="palSearch" class="pal-input" placeholder="搜片段：for、HashMap、方块、事件…（F5 开/关）" spellcheck="false" />
+        <button class="pal-x" title="关闭">×</button>
+      </div>
+      <div class="pal-body">
+        <div class="pal-side" id="palCats"></div>
+        <div class="pal-list" id="palList"></div>
+        <pre class="pal-prev" id="palPrev"></pre>
+      </div>
+      <div class="pal-foot">
+        <span>↑↓ 选择 · Enter ${palState.mode === "template" ? "插入到光标处" : "打开文件"} · Esc 关闭</span>
+        <button class="pal-insert" id="palInsertBtn">插入</button>
+      </div>
+    </div>`;
+  document.body.appendChild(wrap);
+  palState.open = true;
+
+  const input = wrap.querySelector("#palSearch");
+  input.focus();
+  input.oninput = () => { palState.q = input.value; palState.idx = 0; refreshPal(); };
+
+  wrap.querySelector(".pal-x").onclick = closePal;
+  wrap.addEventListener("mousedown", (e) => { if (e.target === wrap) closePal(); });
+
+  wrap.querySelectorAll(".pal-tab").forEach((t) => {
+    t.onclick = () => {
+      palState.mode = t.dataset.mode;
+      palState.idx = 0;
+      palState.results = [];
+      wrap.querySelectorAll(".pal-tab").forEach((x) => x.classList.toggle("on", x === t));
+      wrap.querySelector(".pal-insert").style.display = palState.mode === "template" ? "" : "none";
+      wrap.querySelector(".pal-foot span").textContent =
+        palState.mode === "template" ? "↑↓ 选择 · Enter 插入到光标处 · Esc 关闭" : "↑↓ 选择 · Enter 打开文件 · Esc 关闭";
+      refreshPal(true);
+    };
+  });
+
+  wrap.querySelector("#palInsertBtn").onclick = palInsert;
+  palRender();
+}
+
+function closePal() {
+  const box = $("#palModal");
+  if (box) box.remove();
+  palState.open = false;
+}
+
+function palInsert() {
+  if (palState.mode === "project") { palOpenResult(palState.idx); return; }
+  const s = palState.list[palState.idx];
+  if (!s) return;
+  const ed = $("#editor");
+  if (!ed) return;
+
+  const before = ed.value.slice(0, ed.selectionStart);
+  const after = ed.value.slice(ed.selectionEnd);
+  const lineStart = before.lastIndexOf("\n") + 1;
+  const indentMatch = before.slice(lineStart).match(/^[ \t]*/);
+  const indent = indentMatch ? indentMatch[0] : "";
+
+  const marker = "{{c}}";
+  const rawLines = s.code.split("\n");
+  const outLines = [];
+  let pos = 0;
+  let caret = null;
+
+  for (let i = 0; i < rawLines.length; i++) {
+    const hasMarkerHere = rawLines[i].includes(marker);
+    const colInRaw = hasMarkerHere ? rawLines[i].indexOf(marker) : -1;
+    let line = rawLines[i].replace(/\{\{c\}\}/g, "");
+    if (i > 0 && line.length > 0) line = indent + line;
+    if (hasMarkerHere) {
+      caret = pos + (i > 0 && outLines.length ? 0 : 0) + line.length - (rawLines[i].replace(/\{\{c\}\}/g, "").length - colInRaw) * 0;
+      // 光标 = 本行起始 + 该行内 marker 之前的字符数
+      const beforeInLine = rawLines[i].slice(0, colInRaw).replace(/\{\{c\}\}/g, "");
+      caret = pos + beforeInLine.length + (i > 0 && line.length !== rawLines[i].replace(/\{\{c\}\}/g, "").length ? indent.length : 0);
+    }
+    outLines.push(line);
+    pos += line.length + 1;
+  }
+
+  const text = outLines.join("\n");
+  ed.value = before + text + after;
+
+  const finalCaret = caret === null ? before.length + text.length : before.length + caret;
+  ed.focus();
+  ed.setSelectionRange(finalCaret, finalCaret);
+  ed.dispatchEvent(new Event("input", { bubbles: true }));
+  state.dirty = true;
+  closePal();
+  setStatus("已插入片段：" + s.name, "ok");
+}
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "F5") {
+    e.preventDefault();
+    const codePage = document.querySelector("#page-code");
+    if (codePage && codePage.classList.contains("active")) openPal();
+    return;
+  }
+  if (!palState.open) return;
+  const box = $("#palModal");
+  if (e.key === "Escape") { e.preventDefault(); closePal(); return; }
+  if (e.key === "ArrowDown") {
+    e.preventDefault();
+    const n = palState.mode === "template" ? palState.list.length : palState.results.length;
+    if (n) { palState.idx = (palState.idx + 1) % n; refreshPal(true); }
+  } else if (e.key === "ArrowUp") {
+    e.preventDefault();
+    const n = palState.mode === "template" ? palState.list.length : palState.results.length;
+    if (n) { palState.idx = (palState.idx - 1 + n) % n; refreshPal(true); }
+  } else if (e.key === "Enter") {
+    e.preventDefault();
+    palInsert();
+  }
+});
+
+
+/* ------------------------------------------------------------------ bbmodel 转换 */
+let bbContent = "";
+
+async function convertBbmodel() {
+  const path = ($("#bbPath").value || "").trim();
+  const modid = ($("#bbModid").value || "mymod").trim() || "mymod";
+  const kind = $("#bbKind").value || "block";
+  let name = ($("#bbName").value || "").trim();
+
+  if (!bbContent && !path) {
+    await uiAlert("还没有模型", "点「选文件…」选一个 .bbmodel，或者把完整路径粘到输入框里。");
+    return;
+  }
+  if (!name) {
+    const src = path || "model.bbmodel";
+    name = src.split(/[\\/]/).pop().replace(/\.bbmodel$/i, "");
+  }
+
+  const box = $("#bbResult");
+  box.innerHTML = `<div class="empty">转换中…</div>`;
+
+  const applySkin = !!($("#bbApplySkin") && $("#bbApplySkin").checked);
+  const payload = { modid, name, kind, applySkin };
+  if (bbContent) payload.content = bbContent; else payload.path = path;
+
+  let r;
+  try { r = await post("/api/bbmodel/convert", payload); }
+  catch (e) { box.innerHTML = `<div class="empty">请求失败：${e.message}</div>`; return; }
+
+  if (!r.ok) {
+    box.innerHTML = `<div class="empty">转换失败：${escapeHtml(r.error || "未知错误")}</div>`;
+    return;
+  }
+
+  const files = (r.files || []).map((f) => `<li>${f}</li>`).join("");
+  const warns = (r.warnings || []).length
+    ? `<div class="bb-warn"><b>注意（${r.warnings.length}）</b><ul>${r.warnings.map((w) => `<li>${escapeHtml(w)}</li>`).join("")}</ul></div>`
+    : "";
+  const disp = (r.display || []).join(" · ");
+
+  const kindName = r.kind === "entity" ? "实体模型" : r.kind === "skin" ? "玩家皮肤" : "方块/物品";
+  box.innerHTML = `
+    <div class="bb-sum">
+      <span class="badge ok">转换成功</span>
+      <span class="badge off">${kindName}</span>
+      <span class="muted">${r.elements} 个${r.kind === "entity" ? "骨骼" : "元素"} · ${r.textures} 张贴图 · ${(r.files || []).length} 个文件</span>
+    </div>
+    <div class="muted" style="margin:8px 0 4px">手持 / 地面 / GUI 变换：${disp || "（无）"}</div>
+    <ul class="bb-files">${files}</ul>
+    ${warns}
+    <div class="muted" style="margin:10px 0 4px">注册代码（复制到你的 ModBlocks / ModItems）</div>
+    <pre class="bb-code" id="bbSnippet">${escapeHtml(r.snippet || "")}</pre>
+    <div class="row-gap" style="margin-top:10px">
+      <button class="ghost" id="bbCopy">复制注册代码</button>
+      <button class="ghost" id="bbOpenDir">打开资源目录</button>
+    </div>`;
+
+  $("#bbCopy").onclick = async () => {
+    try { await navigator.clipboard.writeText(r.snippet || ""); setStatus("注册代码已复制", "ok"); }
+    catch { setStatus("复制失败，手动选一下", "err"); }
+  };
+  if (r.kind === "skin") {
+    const ob = $("#bbOpenDir");
+    if (ob) ob.textContent = "去账户页看看";
+  }
+  $("#bbOpenDir").onclick = () => {
+    const dir = (r.files && r.files[0]) ? r.files[0] : "";
+    post("/api/open", { path: "" });
+    setStatus("已打开工程目录", "ok");
+  };
+
+  setStatus(`bbmodel 转换完成：${name}`, "ok");
+  await loadProject();
+}
+
+$("#bbPick")?.addEventListener("click", () => $("#bbFile").click());
+$("#bbFile")?.addEventListener("change", async (e) => {
+  const f = (e.target.files || [])[0];
+  if (!f) return;
+  bbContent = await f.text();
+  $("#bbPath").value = f.name;
+  if (!$("#bbName").value.trim()) $("#bbName").value = f.name.replace(/\.bbmodel$/i, "");
+  setStatus(`已载入 ${f.name}（${Math.round(f.size / 1024)} KB）`, "ok");
+  e.target.value = "";
+});
+$("#btnConvertBb")?.addEventListener("click", convertBbmodel);
+
+
 /* ------------------------------------------------------------------ appearance */
 const ACCENTS = ["#4f8cff", "#37c98b", "#e2a336", "#e4605f", "#a874ff", "#22c3d6", "#ff7ab6"];
 let theme = { accent: "#4f8cff", accent2: "#2f6ae0", bg: "#0d1014", bg2: "#161b22",
@@ -1607,9 +2018,9 @@ async function openAccount() {
           <div class="avatar acc-avatar" id="accAvatar">${(a.name || "S").slice(0, 1).toUpperCase()}</div>
           <div>
             <div class="acc-name">${a.name}</div>
-            <div class="muted">${a.type === "msa" ? "正版账户（Microsoft）" : "离线账户"}</div>
+            <div class="muted">${a.type === "msa" ? "正版账户（Microsoft）" : a.type === "yggdrasil" ? "外置登录（皮肤站）" : "离线账户"}</div>
           </div>
-          <span class="badge ${a.type === "msa" ? "ok" : "off"}">${a.type === "msa" ? "正版" : "离线"}</span>
+          <span class="badge ${a.type === "offline" ? "off" : "ok"}">${a.type === "msa" ? "正版" : a.type === "yggdrasil" ? "外置登录" : "离线"}</span>
         </div>
 
         <div class="acc-sec">
@@ -1628,6 +2039,22 @@ async function openAccount() {
             <button class="ghost" id="accSaveOffline">使用这个名字</button>
           </div>
           <div class="muted">3～16 位，字母数字下划线。离线模式不能进正版服务器。</div>
+        </div>
+
+        <div class="acc-sec">
+          <div class="acc-title">外置登录（皮肤站）</div>
+          <div class="row-gap" style="margin-bottom:8px">
+            <input id="accYggUrl" class="input" value="${a.yggServer || "https://littleskin.cn/api/yggdrasil"}" placeholder="认证服务器地址" />
+          </div>
+          <div class="row-gap" style="margin-bottom:8px">
+            <input id="accYggUser" class="input" placeholder="邮箱 / 用户名" />
+            <input id="accYggPass" class="input" type="password" placeholder="密码" />
+          </div>
+          <div class="row-gap">
+            <button class="primary" id="accYggLogin">登录皮肤站</button>
+            <span class="muted" id="accYggMsg"></span>
+          </div>
+          <div class="muted">皮肤站的皮肤要在网站上上传（本地上传的只影响启动器头像）。登录后启动游戏，皮肤、披风都会带进游戏。</div>
         </div>
 
         <div class="acc-sec">
@@ -1677,6 +2104,22 @@ async function openAccount() {
       setStatus("已切换到离线账户 " + name, "ok");
       close();
     }
+  };
+
+  wrap.querySelector("#accYggLogin").onclick = async () => {
+    const msg = wrap.querySelector("#accYggMsg");
+    const server = wrap.querySelector("#accYggUrl").value.trim();
+    const user = wrap.querySelector("#accYggUser").value.trim();
+    const pass = wrap.querySelector("#accYggPass").value;
+    if (!user || !pass) { msg.textContent = "用户名和密码都要填"; return; }
+    msg.textContent = "登录中…";
+    const r = await post("/api/yggdrasil/login", { server, username: user, password: pass });
+    if (!r.ok) { msg.textContent = r.error || "登录失败"; return; }
+    msg.textContent = r.hasInjector ? "登录成功（已挂载 authlib-injector）" : "登录成功（injector 缺失，皮肤可能不生效）";
+    await refreshAccount();
+    await loadLaunch(true);
+    setStatus("外置登录成功：" + r.name, "ok");
+    setTimeout(close, 1200);
   };
 
   wrap.querySelector("#accLoginMs").onclick = () => {
