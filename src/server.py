@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import http.client
+import base64
+import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -1104,21 +1107,61 @@ def launch(vid: str, username: str = "Steve", memory: int = 4096, jvm_extra: str
         log_line(f"补资源失败：{exc}")
     # 有正版账户就用正版身份启动（带皮肤、能进正版服务器）
     acc = cfg().get("account") or {}
+
+    # 本地皮肤：离线账户 + 有自定义皮肤 → 挂本地 Yggdrasil（authlib-injector）
+    local_skin_ok = False
+    _skin_name = acc.get("name") or username
+    if (not acc.get("type") or acc.get("type") == "offline") and cfg().get("local_skin", True) \
+            and (mc_dir() / "custom_skins" / f"{_skin_name}.png").exists():
+        _jar = authlib_jar()
+        if _jar:
+            cmd.insert(1, f"-javaagent:{_jar}=http://127.0.0.1:8777/api/skinserver")
+            local_skin_ok = True
+            log_line("本地皮肤服务器已挂载（authlib-injector + 本地 Yggdrasil）")
+
+    # 外置登录：挂 authlib-injector
+    if acc.get("type") == "yggdrasil" and acc.get("token") and acc.get("server"):
+        jar = authlib_jar()
+        if jar:
+            cmd.insert(1, f"-javaagent:{jar}={acc['server']}")
+            log_line(f"已挂载 authlib-injector：{acc['server']}")
+        else:
+            log_line("警告：没拿到 authlib-injector.jar，皮肤可能不生效")
+
     if acc.get("type") == "msa" and acc.get("token") and acc.get("uuid"):
         play_name = acc.get("name") or username
         play_uuid = acc["uuid"]
         play_token = acc["token"]
         user_type = "msa"
+    elif acc.get("type") == "yggdrasil" and acc.get("token") and acc.get("uuid"):
+        play_name = acc.get("name") or username
+        play_uuid = acc["uuid"]
+        play_token = acc["token"]
+        user_type = "mojang"
     else:
-        play_name = username
-        play_uuid = offline_uuid(username)
-        play_token = "0"
-        user_type = "legacy"
+        play_name = _skin_name if local_skin_ok else username
+        play_uuid = offline_uuid(play_name)
+        play_token = "cityide-local" if local_skin_ok else "0"
+        user_type = "mojang" if local_skin_ok else "legacy"
 
     cmd += ["--username", play_name, "--version", vid, "--gameDir", str(game_dir),
             "--assetsDir", str(assets), "--assetIndex", asset_index,
             "--uuid", play_uuid, "--accessToken", play_token, "--userType", user_type,
             "--versionType", "release"]
+    # 本地皮肤：装了 CustomSkinLoader 的版本才能读到本地 png
+    try:
+        skin_name = (cfg().get("account") or {}).get("name") or username
+        has_skin = (mc_dir() / "custom_skins" / f"{skin_name}.png").exists()
+        if has_skin and cfg().get("local_skin", True) and detect_loader(vid, data) != "原版":
+            jar = ensure_csl(vid)
+            dst = write_local_skin(skin_name)
+            if jar and dst:
+                log_line(f"本地皮肤已生效：{skin_name}（CustomSkinLoader + LocalSkin）")
+            else:
+                log_line("本地皮肤没挂上：CustomSkinLoader 缺失")
+    except Exception as exc:
+        log_line(f"本地皮肤处理失败：{exc}")
+
     log_line("启动命令: " + " ".join(cmd)[:800])
     try:
         flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
@@ -2024,8 +2067,480 @@ def list_worlds() -> list:
 
 
 
+
+
+# --------------------------------------------------------------------------- bbmodel
+DISPLAY_DEFAULT = {
+    "thirdperson_righthand": {"rotation": [75, 45, 0], "translation": [0, 2.5, 0], "scale": [0.375, 0.375, 0.375]},
+    "thirdperson_lefthand": {"rotation": [75, 45, 0], "translation": [0, 2.5, 0], "scale": [0.375, 0.375, 0.375]},
+    "firstperson_righthand": {"rotation": [0, 45, 0], "translation": [0, 0, 0], "scale": [0.4, 0.4, 0.4]},
+    "firstperson_lefthand": {"rotation": [0, 45, 0], "translation": [0, 0, 0], "scale": [0.4, 0.4, 0.4]},
+    "ground": {"rotation": [0, 0, 0], "translation": [0, 3, 0], "scale": [0.25, 0.25, 0.25]},
+    "gui": {"rotation": [30, 225, 0], "translation": [0, 0, 0], "scale": [0.625, 0.625, 0.625]},
+    "fixed": {"rotation": [0, 180, 0], "translation": [0, 0, 0], "scale": [0.5, 0.5, 0.5]},
+}
+
+
+def _round2(v: float) -> float:
+    r = round(float(v), 2)
+    return int(r) if abs(r - round(r)) < 1e-6 else r
+
+
+def _flatten_outliner(data: dict):
+    """把 outliner 树拍平，返回 {uuid: (累积旋转, 累积原点)} 和 元素字典。"""
+    els = {e.get("uuid"): e for e in (data.get("elements") or [])}
+    acc = {}
+
+    def walk(nodes, rot=(0.0, 0.0, 0.0), origin=(0.0, 0.0, 0.0)):
+        for n in nodes or []:
+            if isinstance(n, str):
+                acc[n] = (rot, origin)
+                continue
+            if isinstance(n, dict):
+                r = n.get("rotation") or [0, 0, 0]
+                o = n.get("origin") or origin
+                if n.get("children") is not None:
+                    walk(n.get("children"), tuple(a + b for a, b in zip(rot, r)), tuple(o))
+                else:
+                    walk(n.get("children") or [], rot, origin)
+
+    walk(data.get("outliner") or [])
+    return els, acc
+
+
+def _decode_textures(textures: list, out_dir: Path, base: str) -> tuple:
+    """把 dataURL 贴图落成 png，返回 (贴图键列表, 警告)"""
+    warnings = []
+    keys = []
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for i, t in enumerate(textures):
+        src = t.get("source")
+        if isinstance(src, dict):
+            src = src.get("source")
+        src = src or ""
+        key = str(i)
+        if not src.startswith("data:image/"):
+            warnings.append(f"贴图 {t.get('name') or i} 不是内嵌图片，已跳过")
+            keys.append(None)
+            continue
+        try:
+            head, b64 = src.split(",", 1)
+            data = base64.b64decode(b64)
+        except Exception as exc:
+            warnings.append(f"贴图 {i} 解码失败：{exc}")
+            keys.append(None)
+            continue
+        fname = base + ".png" if i == 0 else f"{base}_{i}.png"
+        (out_dir / fname).write_bytes(data)
+        keys.append(fname[:-4])
+    return keys, warnings
+
+
+
+def _detect_format(data: dict, kind: str) -> str:
+    fmt = str((data.get("meta") or {}).get("model_format") or "").lower()
+    if kind and kind != "auto":
+        return kind
+    if fmt.startswith("bedrock"):
+        return "bedrock"
+    if "skin" in fmt:
+        return "skin"
+    if "entity" in fmt:
+        return "entity"
+    if fmt in ("java_block", "free", ""):
+        # 没有 faces 但有 outliner 组，也当实体
+        els = data.get("elements") or []
+        if els and not any((e.get("faces") or {}) for e in els):
+            return "entity"
+        return "block"
+    return "block"
+
+
+def _project_package() -> tuple:
+    """找出工程里已有的包名，返回 (package, 目录)"""
+    pd = project_dir()
+    root = pd / "src" / "main" / "java"
+    if root.exists():
+        for f in root.rglob("*.java"):
+            try:
+                first = f.read_text("utf-8", "ignore").splitlines()[:5]
+            except Exception:
+                continue
+            for line in first:
+                line = line.strip()
+                if line.startswith("package "):
+                    pkg = line[8:].rstrip(";").strip()
+                    return pkg, f.parent
+    return "com.example", pd / "src" / "main" / "java" / "com" / "example"
+
+
+def _entity_codegen(data: dict, modid: str, name: str) -> dict:
+    """把骨层级转成 Java 实体模型类骨架。"""
+    res = data.get("resolution") or {}
+    tw = int(res.get("width") or 64)
+    th = int(res.get("height") or 64)
+    els = {e.get("uuid"): e for e in (data.get("elements") or [])}
+    warnings = []
+    warnings.append("实体模型生成的是骨架代码：pivot / 旋转按 Blockbench 的 origin 直译，"
+                    "渲染出来如果方向或位置不对，按注释里的提示调符号（Y 轴方向、pitch 正负）")
+
+    lines = []
+    bones = []
+
+    def walk(nodes, parent_name, depth):
+        for n in nodes or []:
+            if isinstance(n, str):
+                e = els.get(n)
+                if not e:
+                    continue
+                frm = [float(x) for x in (e.get("from") or [0, 0, 0])]
+                to = [float(x) for x in (e.get("to") or [1, 1, 1])]
+                origin = [float(x) for x in (e.get("origin") or [0, 0, 0])]
+                rot = [float(x) for x in (e.get("rotation") or [0, 0, 0])]
+                uv = None
+                if e.get("uv_offset"):
+                    uv = [float(e["uv_offset"][0]), float(e["uv_offset"][1])]
+                elif e.get("faces"):
+                    nf = e["faces"].get("north") or e["faces"].get("up") or next(iter(e["faces"].values()))
+                    if nf.get("uv"):
+                        uv = [float(nf["uv"][0]), float(nf["uv"][1])]
+                bones.append({
+                    "parent": parent_name,
+                    "name": (e.get("name") or "cube").lower().replace(" ", "_"),
+                    "from": frm, "to": to, "origin": origin, "rot": rot,
+                    "uv": uv or [0, 0],
+                })
+                continue
+            if isinstance(n, dict) and n.get("children") is not None:
+                gname = (n.get("name") or ("bone" + str(depth))).lower().replace(" ", "_")
+                bones.append({
+                    "group": True, "parent": parent_name, "name": gname,
+                    "origin": [float(x) for x in (n.get("origin") or [0, 0, 0])],
+                    "rot": [float(x) for x in (n.get("rotation") or [0, 0, 0])],
+                })
+                walk(n.get("children"), gname, depth + 1)
+
+    walk(data.get("outliner") or [], "root", 0)
+    groups = [b for b in bones if b.get("group")]
+    cubes = [b for b in bones if not b.get("group")]
+
+    def ident(n):
+        return "".join(ch for ch in n.title() if ch.isalnum()) or "Part"
+
+    body = []
+    body.append("        MeshDefinition mesh = new MeshDefinition();")
+    body.append("        PartDefinition root = mesh.getRoot();")
+    declared = set()
+    for g in groups:
+        var = ident(g["name"]).lower() + "_def"
+        if var in declared:
+            continue
+        declared.add(var)
+        parent = "root" if g["parent"] == "root" else ident(g["parent"]).lower() + "_def"
+        ox, oy, oz = g["origin"]
+        rx, ry, rz = [v * math.pi / 180 for v in g["rot"]]
+        if any(abs(v) > 0.001 for v in g["rot"]):
+            body.append(f'        PartDefinition {var} = {parent}.addOrReplaceChild("{g["name"]}", '
+                        f'CubeListBuilder.create(), PartPose.offsetAndRotation({ox}f, {oy}f, {oz}f, '
+                        f'{rx:.4f}f, {ry:.4f}f, {rz:.4f}f));')
+        else:
+            body.append(f'        PartDefinition {var} = {parent}.addOrReplaceChild("{g["name"]}", '
+                        f'CubeListBuilder.create(), PartPose.offset({ox}f, {oy}f, {oz}f));')
+    for c in cubes:
+        parent = "root" if c["parent"] == "root" else ident(c["parent"]).lower() + "_def"
+        ox, oy, oz = c["origin"]
+        fx, fy, fz = c["from"]
+        tx, ty, tz = c["to"]
+        bx, by, bz = fx - ox, fy - oy, fz - oz
+        w, h, d = tx - fx, ty - fy, tz - fz
+        u, v = int(c["uv"][0]), int(c["uv"][1])
+        body.append(f'        {parent}.addOrReplaceChild("{c["name"]}",')
+        body.append(f'                CubeListBuilder.create().texOffs({u}, {v})')
+        body.append(f'                        .addBox({bx}f, {by}f, {bz}f, {w}f, {h}f, {d}f),')
+        body.append(f'                PartPose.ZERO);')
+
+    pkg, pkg_dir = _project_package()
+    cls = ident(name) + "Model"
+    src = []
+    src.append(f"package {pkg};")
+    src.append("")
+    src.append("import net.minecraft.client.model.EntityModel;")
+    src.append("import net.minecraft.client.model.geom.ModelLayerLocation;")
+    src.append("import net.minecraft.client.model.geom.ModelPart;")
+    src.append("import net.minecraft.client.model.geom.PartPose;")
+    src.append("import net.minecraft.client.model.geom.builders.CubeListBuilder;")
+    src.append("import net.minecraft.client.model.geom.builders.LayerDefinition;")
+    src.append("import net.minecraft.client.model.geom.builders.MeshDefinition;")
+    src.append("import net.minecraft.client.model.geom.builders.PartDefinition;")
+    src.append("import net.minecraft.client.renderer.RenderType;")
+    src.append("import net.minecraft.resources.Identifier;")
+    src.append("import net.minecraft.world.entity.Entity;")
+    src.append("")
+    src.append("// 由 City IDE 的 bbmodel 转换生成")
+    src.append(f"public class {cls} extends EntityModel<Entity> {{")
+    src.append(f'    public static final ModelLayerLocation LAYER =')
+    src.append(f'            new ModelLayerLocation(Identifier.fromNamespaceAndPath("{modid}", "{name}"), "main");')
+    src.append("")
+    src.append("    private final ModelPart root;")
+    for g in groups:
+        src.append(f"    private final ModelPart {ident(g['name']).lower()};")
+    src.append("")
+    src.append(f"    public {cls}(ModelPart root) {{")
+    src.append("        super(RenderType::entityCutoutNoCull);")
+    src.append("        this.root = root;")
+    for g in groups:
+        v = ident(g["name"]).lower()
+        src.append(f'        this.{v} = root.getChild("{g["name"]}");')
+    src.append("    }")
+    src.append("")
+    src.append("    public static LayerDefinition createBodyLayer() {")
+    src.extend(body)
+    src.append(f"        return LayerDefinition.create(mesh, {tw}, {th});")
+    src.append("    }")
+    src.append("")
+    src.append("    @Override")
+    src.append("    public void setupAnim(Entity entity, float limbSwing, float limbSwingAmount,")
+    src.append("                          float ageInTicks, float netHeadYaw, float headPitch) {")
+    src.append("        // 在这里加动画：head.yRot = netHeadYaw * Mth.DEG_TO_RAD;")
+    src.append("    }")
+    src.append("")
+    src.append("    @Override")
+    src.append("    public void renderToBuffer(com.mojang.blaze3d.vertex.PoseStack poseStack,")
+    src.append("                               com.mojang.blaze3d.vertex.VertexConsumer buffer,")
+    src.append("                               int packedLight, int packedOverlay, int color) {")
+    src.append("        root.render(poseStack, buffer, packedLight, packedOverlay);")
+    src.append("    }")
+    src.append("}")
+
+    snippet = (f'// 注册实体模型（客户端初始化里）\n'
+               f'EntityRenderers.register(ModEntities.EXAMPLE.get(), ctx -> new {cls}(\n'
+               f'    ctx.bakeLayer({cls}.LAYER)));\n'
+               f'// 还需要在 LayerDefinitions 里注册：\n'
+               f'LayerDefinition.create({cls}.createBodyLayer().mesh, {tw}, {th});')
+    return {"cls": cls, "file": pkg_dir / (cls + ".java"), "source": "\n".join(src),
+            "warnings": warnings, "bones": len(bones), "tw": tw, "th": th, "snippet": snippet}
+
+
+def _skin_convert(data: dict, name: str, apply_account: bool) -> dict:
+    texs = data.get("textures") or []
+    if not texs:
+        return {"ok": False, "error": "这个皮肤文件里没有贴图"}
+    src = texs[0].get("source") or ""
+    if isinstance(src, dict):
+        src = src.get("source")
+    if not str(src).startswith("data:image/"):
+        return {"ok": False, "error": "贴图不是内嵌 png，无法导出"}
+    import base64 as _b64
+    data_bytes = _b64.b64decode(str(src).split(",", 1)[1])
+    skin_dir = mc_dir() / "custom_skins"
+    skin_dir.mkdir(parents=True, exist_ok=True)
+    out = skin_dir / (name + ".png")
+    out.write_bytes(data_bytes)
+    if apply_account:
+        save_skin(data_bytes)
+    log_line(f"皮肤已导出：{out}")
+    return {"ok": True, "kind": "skin", "files": [str(out)], "warnings": [],
+            "elements": 0, "textures": 1, "display": [],
+            "snippet": f"// 皮肤已保存到 {out}\n// 启动器「账户」里可以直接看到，游戏内需要外置登录/正版才会显示",
+            "skin": True}
+
+
+def convert_bbmodel(payload: dict) -> dict:
+    raw = payload.get("content") or ""
+    if not raw:
+        pth = (payload.get("path") or "").strip().strip('"')
+        if pth and Path(pth).exists():
+            raw = Path(pth).read_text("utf-8", "ignore")
+    modid = (payload.get("modid") or "mymod").strip().replace(" ", "_")
+    name = (payload.get("name") or "model").strip().replace(" ", "_")
+    kind = (payload.get("kind") or "block").strip()
+    if not raw.strip():
+        return {"ok": False, "error": "没有内容"}
+
+    try:
+        data = json.loads(raw)
+    except Exception as exc:
+        return {"ok": False, "error": "不是合法的 bbmodel JSON：" + str(exc)[:120]}
+
+    fmt = _detect_format(data, kind)
+    if fmt == "bedrock":
+        return {"ok": False, "error": "Bedrock 格式（bedrock_entity / bedrock_block）不支持转换，"
+                                      "请用 Java Block/Item、Modded Entity 或 OptiFine Entity"}
+    if fmt in ("entity", "optifine"):
+        gen = _entity_codegen(data, modid, name)
+        pd0 = project_dir()
+        gen["file"].parent.mkdir(parents=True, exist_ok=True)
+        gen["file"].write_text(gen["source"], "utf-8")
+        rel = str(gen["file"].relative_to(pd0)).replace("\\", "/")
+
+        tex_dir = pd0 / "src" / "main" / "resources" / "assets" / modid / "textures" / "entity"
+        tex_keys, twarns = _decode_textures(data.get("textures") or [], tex_dir, name)
+        gen["warnings"].extend(twarns)
+        files = [rel]
+        for k in tex_keys:
+            if k:
+                files.append(str((tex_dir / (k + ".png")).relative_to(pd0)).replace("\\", "/"))
+
+        return {"ok": True, "kind": "entity", "files": files, "warnings": gen["warnings"],
+                "elements": gen["bones"], "textures": len([k for k in tex_keys if k]),
+                "display": [], "snippet": gen["snippet"]}
+    if fmt == "skin":
+        return _skin_convert(data, name, bool(payload.get("applySkin")))
+
+    res = data.get("resolution") or {}
+    rw = float(res.get("width") or 16) or 16.0
+    rh = float(res.get("height") or 16) or 16.0
+    warnings = []
+
+    pd = project_dir()
+    assets = pd / "src" / "main" / "resources" / "assets" / modid
+    tex_kind = "block" if kind == "block" else "item"
+    tex_dir = assets / "textures" / tex_kind
+    models_dir = assets / "models" / tex_kind
+    states_dir = assets / "blockstates"
+
+    tex_keys, warns = _decode_textures(data.get("textures") or [], tex_dir, name)
+    warnings.extend(warns)
+
+    elements, acc = _flatten_outliner(data)
+    out_elements = []
+    for uuid, e in elements.items():
+        if e.get("export") is False:
+            continue
+        frm = [float(x) for x in (e.get("from") or [0, 0, 0])]
+        to = [float(x) for x in (e.get("to") or [1, 1, 1])]
+        inflate = float(e.get("inflate") or 0)
+        if inflate:
+            frm = [v - inflate for v in frm]
+            to = [v + inflate for v in to]
+
+        rot = list(e.get("rotation") or [0, 0, 0])
+        origin = list(e.get("origin") or [0, 0, 0])
+        group_rot, group_origin = acc.get(uuid, ((0, 0, 0), (0, 0, 0)))
+        rot = [a + b for a, b in zip(rot, group_rot)]
+
+        faces = {}
+        for fname, f in (e.get("faces") or {}).items():
+            uv = f.get("uv")
+            if not uv:
+                warnings.append(f"{e.get('name') or uuid} 的 {fname} 面没有 UV，已跳过")
+                continue
+            tidx = f.get("texture")
+            if tidx is None:
+                tidx = 0
+            tk = tex_keys[tidx] if isinstance(tidx, int) and tidx < len(tex_keys) else None
+            if tk is None:
+                warnings.append(f"{e.get('name') or uuid} 的 {fname} 面引用了缺失贴图 #{tidx}")
+                continue
+            faces[fname] = {
+                "uv": [_round2(float(uv[0]) * 16 / rw), _round2(float(uv[1]) * 16 / rh),
+                       _round2(float(uv[2]) * 16 / rw), _round2(float(uv[3]) * 16 / rh)],
+                "texture": "#" + str(tidx),
+            }
+            if f.get("rotation"):
+                faces[fname]["rotation"] = int(f["rotation"])
+        if not faces:
+            continue
+
+        el = {"from": [_round2(v) for v in frm], "to": [_round2(v) for v in to], "faces": faces}
+        nz = [(i, v) for i, v in enumerate(rot) if abs(v) > 0.01]
+        if len(nz) == 1:
+            axis = "xyz"[nz[0][0]]
+            el["rotation"] = {"origin": [_round2(v) for v in origin], "axis": axis,
+                              "angle": _round2(nz[0][1]), "rescale": bool(e.get("rescale", True))}
+        elif len(nz) > 1:
+            warnings.append(f"{e.get('name') or uuid} 有多轴旋转，Java 模型不支持；"
+                            "请在 Blockbench 里选中它按 Ctrl+J 烘焙后再导出")
+        out_elements.append(el)
+
+    if not out_elements:
+        return {"ok": False, "error": "没有可转换的元素（可能都是多轴旋转或没 UV）"}
+
+    # 贴图键 → 模型里用 #0 #1 ...，另外补 particle
+    tex_map = {}
+    for i, k in enumerate(tex_keys):
+        if k:
+            tex_map[str(i)] = f"{modid}:{tex_kind}/{k}"
+    if tex_map:
+        tex_map["particle"] = "#" + next(iter(tex_map))
+
+    display = data.get("display") or {}
+    if not display:
+        display = DISPLAY_DEFAULT
+        warnings.append("bbmodel 里没有 display（手持/地面/GUI 变换），已用默认值，建议在 Blockbench 里调好再导")
+
+    written = []
+    for k in tex_keys:
+        if k:
+            written.append(str((tex_dir / (k + ".png")).relative_to(pd)).replace("\\", "/"))
+
+    def dump(path: Path, obj) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(obj, ensure_ascii=False, indent=2), "utf-8")
+        written.append(str(path.relative_to(pd)).replace("\\", "/"))
+
+    if kind == "block":
+        block_model = {"textures": dict(tex_map), "elements": out_elements}
+        dump(models_dir / f"{name}.json", block_model)
+        dump(models_dir.parent / "item" / f"{name}.json",
+             {"parent": f"{modid}:block/{name}", "display": display})
+        dump(states_dir / f"{name}.json", {"variants": {"": {"model": f"{modid}:block/{name}"}}})
+        snippet = (f'// 方块\npublic static final DeferredBlock<Block> {name.upper()} =\n'
+                   f'    ModBlocks.BLOCKS.register("{name}", () -> new Block(\n'
+                   f'        BlockBehaviour.Properties.of().setId(ResourceKey.create(Registries.BLOCK,\n'
+                   f'            Identifier.fromNamespaceAndPath("{modid}", "{name}")))));\n\n'
+                   f'// 方块物品（拿在手里用 item 模型里的 display）\n'
+                   f'public static final DeferredItem<BlockItem> {name.upper()}_ITEM =\n'
+                   f'    ModItems.ITEMS.registerSimpleBlockItem(ModBlocks.{name.upper()});')
+    else:
+        item_model = {"textures": dict(tex_map), "elements": out_elements, "display": display}
+        dump(assets / "models" / "item" / f"{name}.json", item_model)
+        snippet = (f'public static final DeferredItem<Item> {name.upper()} =\n'
+                   f'    ModItems.ITEMS.registerSimpleItem("{name}", new Item.Properties());')
+
+    log_line(f"bbmodel 转换完成：{name}（{len(out_elements)} 个元素，{len(written)} 个文件）")
+    return {"ok": True, "files": written, "warnings": warnings[:20],
+            "elements": len(out_elements), "textures": len([k for k in tex_keys if k]),
+            "snippet": snippet, "display": list(display.keys())}
+
+
+# --------------------------------------------------------------------------- code search
+SEARCH_EXTS = {".java", ".txt", ".json", ".toml", ".md", ".yml", ".yaml", ".xml", ".properties", ".gradle", ".cfg"}
+SEARCH_SKIP = {"build", ".gradle", ".idea", "out", ".git", "node_modules", "__pycache__", "imported"}
+
+
+def search_project(q: str, limit: int = 60) -> list:
+    """在工程里按行搜关键词，返回 文件 / 行号 / 那行内容。"""
+    q = (q or "").strip()
+    if len(q) < 2:
+        return []
+    pd = project_dir()
+    if not pd.exists():
+        return []
+    needle = q.lower()
+    out = []
+    for f in pd.rglob("*"):
+        if not f.is_file():
+            continue
+        if f.suffix.lower() not in SEARCH_EXTS:
+            continue
+        if any(part in SEARCH_SKIP for part in f.relative_to(pd).parts[:-1]):
+            continue
+        try:
+            lines = f.read_text("utf-8", "ignore").splitlines()
+        except Exception:
+            continue
+        rel = f.relative_to(pd).as_posix()
+        for i, line in enumerate(lines, 1):
+            if needle in line.lower():
+                out.append({"path": rel, "line": i, "text": line.strip()[:200]})
+                if len(out) >= limit:
+                    return out
+    return out
+
+
 # --------------------------------------------------------------------------- update
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 DEFAULT_UPDATE_REPO = "citybiome/city-minecraft-ide"
 
 
@@ -2116,8 +2631,175 @@ def download_update(url: str, name: str) -> dict:
         return {"ok": False, "error": str(exc)[:200]}
 
 
+
+# --------------------------------------------------------------------------- yggdrasil (外置登录)
+def authlib_jar() -> Path:
+    """authlib-injector.jar 放 .minecraft 里，缺了就从镜像拉一份。"""
+    jar = mc_dir() / "authlib-injector.jar"
+    if jar.exists() and jar.stat().st_size > 50_000:
+        return jar
+    try:
+        raw = http_bytes_any([
+            "https://gh-proxy.com/https://github.com/yushijinhun/authlib-injector/releases/download/v1.2.5/authlib-injector-1.2.5.jar",
+            "https://ghfast.top/https://github.com/yushijinhun/authlib-injector/releases/download/v1.2.5/authlib-injector-1.2.5.jar",
+        ], timeout=60)
+        if raw and len(raw) > 50_000:
+            mc_dir().mkdir(parents=True, exist_ok=True)
+            jar.write_bytes(raw)
+            log_line(f"authlib-injector 已下载：{len(raw) // 1024} KB")
+            return jar
+    except Exception as exc:
+        log_line(f"下载 authlib-injector 失败：{exc}")
+    return None
+
+
+def ygg_login(server: str, username: str, password: str) -> dict:
+    server = (server or "").strip().rstrip("/")
+    if not server.startswith("http"):
+        return {"ok": False, "error": "认证地址要填完整，比如 https://littleskin.cn/api/yggdrasil"}
+    if not username or not password:
+        return {"ok": False, "error": "用户名和密码都要填"}
+
+    try:
+        data = http_post_json(server + "/authserver/authenticate", {
+            "agent": {"name": "Minecraft", "version": 1},
+            "username": username,
+            "password": password,
+            "requestUser": False,
+        }, timeout=30)
+    except Exception as exc:
+        msg = str(exc)
+        if "403" in msg:
+            return {"ok": False, "error": "用户名或密码不对（服务器返回 403）"}
+        return {"ok": False, "error": "登录失败：" + msg[:160]}
+
+    token = data.get("accessToken")
+    prof = data.get("selectedProfile") or {}
+    if not token or not prof.get("id"):
+        return {"ok": False, "error": "服务器没返回角色信息（账号可能还没创建角色）"}
+
+    jar = authlib_jar()
+    acc = {"type": "yggdrasil", "name": prof.get("name"), "uuid": prof.get("id"),
+           "token": token, "server": server}
+    save_cfg({"account": acc, "username": prof.get("name")})
+    log_line(f"外置登录成功：{prof.get('name')} @ {server}")
+    return {"ok": True, "name": prof.get("name"), "uuid": prof.get("id"),
+            "hasInjector": bool(jar), "server": server}
+
+
+
+# --------------------------------------------------------------------------- local skin (CustomSkinLoader)
+CSL_URLS = [
+    "https://gh-proxy.com/https://github.com/xfl03/MCCustomSkinLoader/releases/download/v15.1/CustomSkinLoader_Universal-15.1.jar",
+    "https://ghfast.top/https://github.com/xfl03/MCCustomSkinLoader/releases/download/v15.1/CustomSkinLoader_Universal-15.1.jar",
+]
+
+
+def ensure_csl(vid: str):
+    """把 CustomSkinLoader 塞进这个版本的 mods 里（只对带加载器的版本有效）。"""
+    cached = mc_dir() / "csl" / "CustomSkinLoader_Universal.jar"
+    if not cached.exists() or cached.stat().st_size < 50_000:
+        try:
+            raw = http_bytes_any(CSL_URLS, timeout=90)
+            if not raw or len(raw) < 50_000:
+                return None
+            cached.parent.mkdir(parents=True, exist_ok=True)
+            cached.write_bytes(raw)
+            log_line(f"CustomSkinLoader 已下载（{len(raw) // 1024} KB）")
+        except Exception as exc:
+            log_line(f"下载 CustomSkinLoader 失败：{exc}")
+            return None
+    dest_dir = mods_dir_for(vid)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / "CustomSkinLoader_Universal.jar"
+    try:
+        if not dest.exists() or dest.stat().st_size != cached.stat().st_size:
+            shutil.copy2(cached, dest)
+    except Exception as exc:
+        log_line(f"复制 CustomSkinLoader 失败：{exc}")
+        return None
+    return dest
+
+
+def write_local_skin(name: str):
+    """把自定义皮肤放到 CustomSkinLoader 的本地皮肤目录。"""
+    src = mc_dir() / "custom_skins" / f"{name}.png"
+    if not src.exists():
+        return None
+    d = mc_dir() / "CustomSkinLoader" / "LocalSkin" / "skins"
+    d.mkdir(parents=True, exist_ok=True)
+    dst = d / f"{name}.png"
+    try:
+        shutil.copy2(src, dst)
+    except Exception:
+        return None
+    return dst
+
+
 # --------------------------------------------------------------------------- accounts
 MS_CLIENT_ID_DEFAULT = "00000000402b5328"
+
+
+
+# --------------------------------------------------------------------------- local skin server (Yggdrasil)
+SKIN_N = int("23798114714336741992509998229205253638319104070919106931866889136006055934251185982185421023955893178303970404353594749571611343132249489207404358986483143869945966192557218766172937110485863733267250401449105763465597763657749188833381876560007712470158506473807878933561155264460946689068259334927930153702684870276123916108201523577883803276073824904169458833958083144107133075813319267877340335607158951837550971116957276832378943302895353037621585401259754475439075667466883523369116155027374033813389332645142590706581336507505676317706453769813854270291941998115821181714863408639800255096815660150077474928911")
+SKIN_E = 65537
+SKIN_D = int("7372887394294722209071562690476882827600150892716199202658426797342981211972413753792404114780970369291908617879905821067519061155640228098129882430711716330246775067117533146594676520000991458874502222424319749475952469495200261380181967768960992935198411819952014493599427750577766171396950387359456396245983874281848927317710405425714940761292148666333083034337366036209497338880369017606978875996779384580623515919143494074116232288304156536310686912856543908955406569132621281177845366477193593746421718609832302541486853782704476086447014964560609748139041992399150978692472159117645210122082501336434805225217")
+
+
+def _der(tag: int, content: bytes) -> bytes:
+    n = len(content)
+    if n < 0x80:
+        ln = bytes([n])
+    else:
+        b = n.to_bytes((n.bit_length() + 7) // 8, "big")
+        ln = bytes([0x80 | len(b)]) + b
+    return bytes([tag]) + ln + content
+
+
+def _der_int(i: int) -> bytes:
+    b = i.to_bytes((i.bit_length() + 7) // 8 or 1, "big")
+    if b[0] & 0x80:
+        b = b"\x00" + b
+    return _der(0x02, b)
+
+
+def skin_public_pem() -> str:
+    rsa_pub = _der(0x30, _der_int(SKIN_N) + _der_int(SKIN_E))
+    alg = _der(0x30, _der(0x06, bytes.fromhex("2a864886f70d010101")) + _der(0x05, b""))
+    spki = _der(0x30, alg + _der(0x03, b"\x00" + rsa_pub))
+    b64 = base64.b64encode(spki).decode()
+    lines = [b64[i:i + 64] for i in range(0, len(b64), 64)]
+    return "-----BEGIN PUBLIC KEY-----\n" + "\n".join(lines) + "\n-----END PUBLIC KEY-----"
+
+
+def _rsa_sign(value: str) -> str:
+    t = bytes.fromhex("3021300906052b0e03021a05000414") + hashlib.sha1(value.encode("utf-8")).digest()
+    k = (SKIN_N.bit_length() + 7) // 8
+    em = b"\x00\x01" + b"\xff" * (k - len(t) - 3) + b"\x00" + t
+    sig = pow(int.from_bytes(em, "big"), SKIN_D, SKIN_N).to_bytes(k, "big")
+    return base64.b64encode(sig).decode()
+
+
+def skin_meta() -> dict:
+    return {
+        "signaturePublickey": skin_public_pem(),
+        "skinDomains": ["127.0.0.1", "localhost"],
+        "meta": {"serverName": "City IDE Local Skin", "implementationName": "CityIDE",
+                 "implementationVersion": "1.0.1"},
+    }
+
+
+def skin_profile(uuid_hex: str) -> dict:
+    log_line(f"[皮肤] 游戏请求了档案 {uuid_hex[:8]}…")
+    acc = cfg().get("account") or {}
+    name = acc.get("name") or cfg().get("username") or "Steve"
+    url = f"http://127.0.0.1:8777/api/skinserver/skins/{name}.png"
+    payload = {"timestamp": int(time.time() * 1000), "profileId": uuid_hex,
+               "profileName": name, "textures": {"SKIN": {"url": url}}}
+    value = base64.b64encode(json.dumps(payload, separators=(",", ":")).encode("utf-8")).decode()
+    return {"id": uuid_hex, "name": name,
+            "properties": [{"name": "textures", "value": value, "signature": _rsa_sign(value)}]}
 
 
 def account_state() -> dict:
@@ -2129,6 +2811,7 @@ def account_state() -> dict:
         "uuid": acc.get("uuid") or "",
         "skin": skin.exists(),
         "skinUrl": "/api/account/skin" if skin.exists() else "",
+        "yggServer": acc.get("server") or "",
         "clientId": cfg().get("msa_client_id") or "",
     }
 
@@ -2927,6 +3610,8 @@ def build_get(handler, path: str, qs: dict) -> bool:
         }) or True
     if path == "/api/diagnosis":
         return handler._json({"diagnosis": STATE.get("diagnosis"), "launch": STATE.get("launch")}) or True
+    if path == "/api/search":
+        return handler._json({"ok": True, "results": search_project(qs.get("q", [""])[0])}) or True
     if path == "/api/update/check":
         return handler._json(check_update()) or True
     if path == "/api/theme":
@@ -2941,6 +3626,24 @@ def build_get(handler, path: str, qs: dict) -> bool:
         handler.send_header("Content-Type", "image/*")
         handler.send_header("Content-Length", str(len(data)))
         handler.send_header("Cache-Control", "no-store")
+        handler.end_headers()
+        handler.wfile.write(data)
+        return True
+    if path in ("/api/skinserver", "/api/skinserver/"):
+        return handler._json(skin_meta()) or True
+    if path.startswith("/api/skinserver/sessionserver/session/minecraft/profile/"):
+        uid = path.rsplit("/", 1)[-1].replace("-", "").lower()
+        return handler._json(skin_profile(uid)) or True
+    if path.startswith("/api/skinserver/skins/"):
+        fname = path.rsplit("/", 1)[-1]
+        f = mc_dir() / "custom_skins" / fname
+        if not f.exists() or f.suffix.lower() != ".png":
+            handler._json({"error": "no skin"}, 404)
+            return True
+        data = f.read_bytes()
+        handler.send_response(200)
+        handler.send_header("Content-Type", "image/png")
+        handler.send_header("Content-Length", str(len(data)))
         handler.end_headers()
         handler.wfile.write(data)
         return True
@@ -3334,7 +4037,20 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(tutorial_state())
             if path == "/api/tutorial/restart":
                 save_cfg({"tutorial": {"step": 0, "active": True, "done": False}})
-                return self._json(tutorial_state())
+            if path == "/api/bbmodel/convert":
+                self._json(convert_bbmodel(body))
+                return True
+            if path in ("/api/skinserver/authserver/authenticate",
+                        "/api/skinserver/authserver/refresh",
+                        "/api/skinserver/authserver/validate"):
+                _n = (cfg().get("account") or {}).get("name") or cfg().get("username") or "Steve"
+                _u = offline_uuid(_n)
+                return self._json({"accessToken": "cityide-local", "clientToken": "cityide",
+                                   "selectedProfile": {"id": _u, "name": _n},
+                                   "availableProfiles": [{"id": _u, "name": _n}]})
+            if path == "/api/yggdrasil/login":
+                return self._json(ygg_login(body.get("server", ""), body.get("username", ""),
+                                            body.get("password", "")))
             if path == "/api/config":
                 save_cfg(body)
                 return self._json({"ok": True, "config": cfg()})
