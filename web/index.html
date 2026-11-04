@@ -370,6 +370,34 @@
               <div id="jarResult" class="result"><div class="empty">还没有解析</div></div>
             </div>
           </div>
+          <div class="card" style="grid-column:1 / -1">
+            <div class="card-head">
+              <span>bbmodel 转换</span>
+              <span class="muted" style="font-size:11.5px">Blockbench 模型 → 方块/物品资源 + 手持变换</span>
+            </div>
+            <div class="pad">
+              <div class="row-gap" style="margin-bottom:10px">
+                <input id="bbPath" class="input" placeholder="粘贴 .bbmodel 路径（如 C:\Users\...\mymodel.bbmodel）" />
+                <button class="ghost" id="bbPick">选文件…</button>
+                <button class="primary" id="btnConvertBb">转换</button>
+              </div>
+              <div class="row-gap" style="margin-bottom:10px">
+                <input id="bbModid" class="input compact" placeholder="modid" value="mymod" style="max-width:130px" />
+                <input id="bbName" class="input compact" placeholder="模型名（留空取文件名）" style="max-width:220px" />
+                <select id="bbKind" class="input" style="max-width:150px">
+                  <option value="auto">自动识别</option>
+                  <option value="block">Java 方块</option>
+                  <option value="item">Java 物品</option>
+                  <option value="entity">实体模型</option>
+                  <option value="skin">玩家皮肤</option>
+                </select>
+                <label class="check" style="margin:0;font-size:11.5px"><input type="checkbox" id="bbApplySkin" checked /> 皮肤设为当前账户</label>
+                <span class="muted" style="font-size:11.5px">输出到工程 src/main/resources/assets/&lt;modid&gt;/</span>
+              </div>
+              <input type="file" id="bbFile" accept=".bbmodel" hidden />
+              <div id="bbResult" class="result"><div class="empty">还没有转换</div></div>
+            </div>
+          </div>
           <div class="card">
             <div class="card-head"><span>报错诊断</span></div>
             <div class="pad">
