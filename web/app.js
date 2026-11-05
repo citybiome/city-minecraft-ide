@@ -52,6 +52,7 @@ async function api(path, opts) {
 }
 
 const post = (path, body) => api(path, { method: "POST", body: JSON.stringify(body || {}) });
+const get = (path) => api(path);
 
 /* ------------------------------------------------------------------ routing */
 function showPage(name) {
@@ -60,6 +61,7 @@ function showPage(name) {
   if (name === "launch") loadLaunch();
   if (name === "tutorial") refreshTutorial();
   if (name === "code") loadProject().catch(() => {});
+  if (name === "lan") { bindLanPage(); refreshLanHost(); }
   if (name === "build") {
     loadCompilers().catch(() => {});
     fillLibsVersions();
@@ -274,12 +276,13 @@ async function loadJava() {
   data.remote.forEach((r) => {
     const row = document.createElement("div");
     row.className = "row";
+    const srcs = (r.sources || ["Adoptium 官方"]).join(" · ");
     row.innerHTML = `
-      <div class="row-main"><div class="row-title">JDK ${r.major}</div><div class="row-sub">Temurin Windows x64</div></div>
+      <div class="row-main"><div class="row-title">JDK ${r.major}</div><div class="row-sub">Windows x64 · ${srcs}</div></div>
       <div class="row-actions"><button class="primary" data-act="dl">下载</button></div>`;
     row.querySelector('[data-act="dl"]').addEventListener("click", async () => {
       await post("/api/java/download", { major: r.major });
-      setStatus("下载 JDK " + r.major, "busy");
+      setStatus("下载 JDK " + r.major + "（国内镜像优先）", "busy");
       startPolling();
     });
     remote.appendChild(row);
@@ -1703,6 +1706,123 @@ document.addEventListener("keydown", (e) => {
 });
 
 
+/* ------------------------------------------------------------------ 联机页 */
+let lanTimer = null;
+let lanBound = false;
+
+function fmtPortInfo(r) {
+  if (!r || !r.port) return `<div class="empty">还没抓到端口，先去游戏里「对局域网开放」</div>`;
+  const lan = r.lan || `本机:${r.port}`;
+  return `
+    <div class="lan-row"><span class="lan-k">端口</span><b>${r.port}</b></div>
+    <div class="lan-row"><span class="lan-k">局域网地址</span><code>${lan}</code>
+      <button class="ghost tiny" data-copy="${lan}">复制</button></div>
+    <div class="lan-row"><span class="lan-k">本机 IP</span><code>${(r.ips || []).join(" / ") || "-"}</code></div>
+    <div class="muted" style="margin-top:8px;font-size:11.5px">同一个 Wi-Fi 下，朋友在「加入」里填上面的地址就能进。</div>`;
+}
+
+async function refreshLanHost() {
+  const box = $("#lanHostInfo");
+  if (!box) return;
+  const vid = (state && state.selected) || "";
+  const r = await get(`/api/lan/info?vid=${encodeURIComponent(vid)}`);
+  box.innerHTML = fmtPortInfo(r);
+  box.querySelectorAll("[data-copy]").forEach((b) => {
+    b.onclick = async () => {
+      try { await navigator.clipboard.writeText(b.dataset.copy); setStatus("地址已复制", "ok"); }
+      catch { setStatus("复制失败", "err"); }
+    };
+  });
+  return r;
+}
+
+function renderWorlds(worlds) {
+  const box = $("#lanWorlds");
+  const list = (worlds || []).filter((w) => !w.error && w.port);
+  if (!list.length) {
+    box.innerHTML = `<div class="empty">没有扫到局域网世界（朋友要先「对局域网开放」）</div>`;
+    return;
+  }
+  box.innerHTML = list.map((w) => `
+    <button class="lan-world" data-addr="${w.host}:${w.port}">
+      <b>${escapeHtml(w.motd || "未命名世界")}</b>
+      <span>${w.host}:${w.port}</span>
+    </button>`).join("");
+  box.querySelectorAll(".lan-world").forEach((b) => {
+    b.onclick = () => {
+      $("#lanAddr").value = b.dataset.addr;
+      setStatus("已填入地址，点「加入」", "ok");
+    };
+  });
+}
+
+async function lanJoin() {
+  const addr = ($("#lanAddr").value || "").trim();
+  if (!addr) { await uiAlert("地址是空的", "填一个 主机:端口，比如 192.168.1.5:25565。"); return; }
+  const r = await post("/api/lan/join", { addr });
+  if (!r.ok) { setStatus(r.error || "加入失败", "err"); return; }
+  setStatus(`正在连 ${addr}…`, "ok");
+  const vid = (state && state.selected) || "";
+  await post("/api/launch", { id: vid, memory: (state && state.memory) || 4096 });
+}
+
+async function lanHost() {
+  const vid = (state && state.selected) || "";
+  if (!vid) { await uiAlert("先选个版本", "在启动页左边选一个 Minecraft 版本。"); return; }
+  setStatus("正在启动游戏，进去后 Esc → 对局域网开放", "ok");
+  await post("/api/launch", { id: vid, memory: (state && state.memory) || 4096 });
+  if (lanTimer) clearInterval(lanTimer);
+  lanTimer = setInterval(refreshLanHost, 3000);
+}
+
+function bindLanPage() {
+  if (lanBound) return;
+  lanBound = true;
+  $("#btnLanHost").onclick = lanHost;
+  $("#btnLanRefresh").onclick = async () => { const r = await refreshLanHost(); setStatus(r && r.port ? "端口 " + r.port : "还没抓到端口", r && r.port ? "ok" : "err"); };
+  $("#btnLanJoin").onclick = lanJoin;
+  $("#btnLanScan").onclick = async () => {
+    const msg = $("#lanScanMsg");
+    msg.textContent = "扫描中…";
+    const r = await get("/api/lan/scan");
+    const n = ((r.worlds || []).filter((w) => w.port)).length;
+    msg.textContent = n ? `找到 ${n} 个` : "没找到";
+    renderWorlds(r.worlds);
+  };
+  $("#btnLanUpnp").onclick = async () => {
+    const msg = $("#lanUpnpMsg");
+    const info = await get(`/api/lan/info?vid=${encodeURIComponent((state && state.selected) || "")}`);
+    if (!info.port) { msg.textContent = "先开房拿到端口"; return; }
+    msg.textContent = "正在请求路由器…";
+    const r = await post("/api/lan/upnp", { port: info.port });
+    if (r.ok) {
+      msg.innerHTML = `公网地址：<code>${r.externalIp || "?"}:${r.port}</code>（朋友直接连这个）`;
+    } else {
+      msg.textContent = r.error || "映射失败";
+    }
+  };
+  $("#btnInstallRedstone").onclick = async () => {
+    const msg = $("#lanExtraMsg");
+    msg.textContent = "正在 Modrinth 上找…";
+    const r = await post("/api/mods/install-online", { query: "redstoneonline", vid: (state && state.selected) || "" });
+    if (r.ok) {
+      msg.innerHTML = `已装好：<b>${escapeHtml(r.name || "")}</b> ${escapeHtml(r.version || "")} → mods 目录，进游戏后在多人游戏里用房号`;
+    } else {
+      msg.textContent = r.error || "没装成";
+    }
+  };
+  $("#btnOpenTerracotta").onclick = () => { post("/api/open", { path: "https://github.com/burningtnt/Terracotta" }); };
+}
+
+/* 版本号写进标题栏 */
+async function showAppVersion() {
+  try {
+    const s = await get("/api/state");
+    const el = $("#appVer");
+    if (el) el.textContent = "v" + (s.version || "?");
+  } catch {}
+}
+
 /* ------------------------------------------------------------------ bbmodel 转换 */
 let bbContent = "";
 
@@ -2717,3 +2837,5 @@ boot().catch((e) => {
   setStatus("初始化失败：" + e.message, "err");
   console.error(e);
 });
+
+showAppVersion();
