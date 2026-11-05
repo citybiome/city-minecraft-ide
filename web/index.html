@@ -13,7 +13,7 @@
     <div class="brand">
       <div class="logo">C</div>
       <div class="brand-text">
-        <b>City Minecraft Java IDE</b>
+        <b>City Minecraft Java IDE <span id="appVer" class="ver-pill">v…</span></b>
         <span id="mcPath" class="sub">读取中…</span>
       </div>
     </div>
@@ -36,6 +36,9 @@
     <nav class="rail">
       <button class="rail-btn active" data-page="launch" title="启动游戏">
         <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg><small>启动</small>
+      </button>
+      <button class="rail-btn" data-page="lan" title="联机">
+        <svg viewBox="0 0 24 24"><circle cx="8" cy="8" r="2.6"/><circle cx="16" cy="8" r="2.6"/><circle cx="12" cy="16" r="2.6"/><path d="M10 9.2h4M9 10.2l1.8 3.6M15 10.2l-1.8 3.6"/></svg><small>联机</small>
       </button>
       <button class="rail-btn" data-page="versions" title="下载">
         <svg viewBox="0 0 24 24"><path d="M12 3v11m0 0l-4-4m4 4l4-4M5 19h14"/></svg><small>下载</small>
@@ -106,6 +109,78 @@
       </section>
 
       <!-- download center (折叠式) -->
+      <section class="page" id="page-lan">
+        <div class="page-head">
+          <div>
+            <h1>联机</h1>
+            <p class="muted">开房间、找局域网世界、一键加入服务器。</p>
+          </div>
+        </div>
+
+        <div class="lan-grid">
+          <div class="card">
+            <div class="card-head"><span>开房间</span><span class="muted" style="font-size:11.5px">和朋友一起玩</span></div>
+            <div class="pad">
+              <p class="muted" style="margin:0 0 10px;line-height:1.7">
+                启动游戏后，在游戏里按 <b>Esc → 对局域网开放</b>，这里会自动抓到端口。
+              </p>
+              <div class="row-gap" style="margin-bottom:10px">
+                <button class="primary" id="btnLanHost">启动游戏并开房</button>
+                <button class="ghost" id="btnLanRefresh">刷新端口</button>
+              </div>
+              <div id="lanHostInfo" class="lan-info"><div class="empty">还没开房</div></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head"><span>加入</span><span class="muted" style="font-size:11.5px">地址或房间</span></div>
+            <div class="pad">
+              <div class="row-gap" style="margin-bottom:10px">
+                <input id="lanAddr" class="input" placeholder="192.168.1.5:25565 或 example.com:25565" />
+                <button class="primary" id="btnLanJoin">加入</button>
+              </div>
+              <div class="row-gap" style="margin-bottom:10px">
+                <button class="ghost" id="btnLanScan">扫描局域网世界</button>
+                <span class="muted" id="lanScanMsg" style="font-size:11.5px"></span>
+              </div>
+              <div id="lanWorlds" class="lan-worlds"><div class="empty">点上面的按钮扫一下</div></div>
+            </div>
+          </div>
+
+          <div class="card" style="grid-column:1 / -1">
+            <div class="card-head"><span>公网联机（内网穿透）</span></div>
+            <div class="pad">
+              <p class="muted" style="margin:0 0 10px;line-height:1.7">
+                先用上面的「开房间」拿到端口，再点下面的按钮让路由器把端口映射出去。
+                大部分家用路由器支持 UPnP，成功后会给你一个公网地址，朋友直接连。
+              </p>
+              <div class="row-gap">
+                <button class="primary" id="btnLanUpnp">尝试映射到公网</button>
+                <span class="muted" id="lanUpnpMsg" style="font-size:11.5px"></span>
+              </div>
+            </div>
+          </div>
+
+          <div class="card" style="grid-column:1 / -1">
+            <div class="card-head"><span>陶瓦联机 / 红石联机</span></div>
+            <div class="pad">
+              <p class="muted" style="margin:0 0 10px;line-height:1.7">
+                这两个是社区做的房间制联机方案：
+              </p>
+              <ul class="muted" style="margin:0 0 12px;padding-left:20px;line-height:1.9;font-size:12.5px">
+                <li><b>陶瓦联机（Terracotta）</b>：开源，靠中继服务器转发，双方输同一个房间号就能连，不是 mod，要启动器实现它的协议。</li>
+                <li><b>红石联机（RedstoneOnline）</b>：是个 mod，装进 mods 目录，进游戏后建房/进房，双方游戏版本和 mod 必须一致。</li>
+              </ul>
+              <div class="row-gap">
+                <button class="ghost" id="btnInstallRedstone">把红石联机装进当前版本</button>
+                <button class="ghost" id="btnOpenTerracotta">打开陶瓦联机主页</button>
+              </div>
+              <div id="lanExtraMsg" class="muted" style="margin-top:8px;font-size:11.5px"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <section class="page" id="page-versions">
         <div class="dl-accordion" id="dlAccordion">
 
@@ -268,7 +343,7 @@
             <div class="list" id="javaList"><div class="empty">扫描中…</div></div>
           </div>
           <div class="card side-card">
-            <div class="card-head"><span>在线安装</span></div>
+            <div class="card-head"><span>在线安装</span><span class="muted" style="font-size:11px">清华 TUNA · 华为云 · 官方</span></div>
             <div class="list" id="javaRemote"><div class="empty">读取中…</div></div>
           </div>
         </div>
