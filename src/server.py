@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import http.client
 import base64
+import io
 import hashlib
 import json
 import math
@@ -97,6 +98,11 @@ def http_json(url: str, timeout: int = HTTP_TIMEOUT) -> dict:
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
 
+
+def http_text(url: str, timeout: int = 15) -> str:
+    req = urllib.request.Request(url, headers={"User-Agent": "curl/8.4.0"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read().decode("utf-8", "ignore")
 
 def http_json_any(urls: list, timeout: int = 12):
     """依次尝试多个镜像地址，返回第一个成功的结果。"""
@@ -680,36 +686,111 @@ def pick_java(major: int) -> str | None:
     return javas[0]["path"] if javas else None
 
 
+# --------------------------------------------------------------------------- JDK 国内镜像
+JAVA_MIRROR_NOTE = "国内镜像（清华 TUNA / 华为云）优先，失败再走 Adoptium 官方"
+
+
+def _tuna_zip(major: int):
+    base = f"https://mirrors.tuna.tsinghua.edu.cn/Adoptium/{major}/jdk/x64/windows/"
+    try:
+        html = http_text(base, timeout=12)
+    except Exception:
+        return None
+    zips = re.findall(r'href="([^"]*windows[^"]*\.zip)"', html)
+    if not zips:
+        return None
+    name = sorted(zips)[-1]
+    return base + name
+
+
+def _huawei_zip(major: int):
+    try:
+        html = http_text("https://mirrors.huaweicloud.com/openjdk/", timeout=12)
+    except Exception:
+        return None
+    vers = [v for v in re.findall(r'href="(\d+\.\d+\.\d+[^"]*)/"', html) if v.split(".")[0] == str(major)]
+    if not vers:
+        return None
+    vers.sort(key=lambda v: [int(x) for x in re.findall(r"\d+", v)])
+    v = vers[-1]
+    base = f"https://mirrors.huaweicloud.com/openjdk/{v}/"
+    try:
+        html2 = http_text(base, timeout=12)
+    except Exception:
+        return None
+    zips = re.findall(r'href="([^"]*windows-x64[^"]*\.zip)"', html2)
+    if not zips:
+        return None
+    return base + sorted(zips)[-1]
+
+
+def java_candidates(major: int) -> list:
+    """按国内优先的顺序给出这个大版本可用的下载地址"""
+    out = []
+    u = _tuna_zip(major)
+    if u:
+        out.append({"source": "清华 TUNA", "url": u})
+    u = _huawei_zip(major)
+    if u:
+        out.append({"source": "华为云", "url": u})
+    out.append({
+        "source": "Adoptium 官方",
+        "url": f"https://api.adoptium.net/v3/binary/latest/{major}/ga/windows/x64/jdk/hotspot/normal/eclipse",
+    })
+    return out
+
+
 def java_remote() -> list:
     try:
-        data = http_json("https://api.adoptium.net/v3/info/available_releases", timeout=20)
+        data = http_json("https://api.adoptium.net/v3/info/available_releases", timeout=12)
         majors = data.get("available_releases", [])[-8:]
     except Exception:
         majors = [8, 11, 17, 21, 25]
     out = []
     for m in reversed(majors):
-        out.append({"major": m})
+        out.append({"major": m, "sources": ["清华 TUNA", "华为云", "Adoptium 官方"]})
     return out
 
 
 def java_download(major: int) -> None:
     try:
         set_progress(task=f"下载 JDK {major}", running=True, message="查询下载地址", error=None, done=0, total=1)
-        url = (f"https://api.adoptium.net/v3/binary/latest/{major}/ga/windows/x64/jdk/hotspot/normal/eclipse")
         dest_dir = ROOT / "runtimes"
         dest_dir.mkdir(parents=True, exist_ok=True)
         zip_path = dest_dir / f"jdk{major}.zip"
-        download(url, zip_path, f"JDK {major}")
+
+        cands = java_candidates(major)
+        log_line(f"JDK {major} 可选下载源：" + " / ".join(c["source"] for c in cands))
+        last_err = None
+        for c in cands:
+            try:
+                set_progress(message=f"从{c['source']}下载", done=0, total=1)
+                log_line(f"JDK {major}：尝试 {c['source']} {c['url']}")
+                download(c["url"], zip_path, f"JDK {major}（{c['source']}）")
+                if zip_path.exists() and zip_path.stat().st_size > 20_000_000:
+                    log_line(f"JDK {major}：{c['source']} 下载完成")
+                    last_err = None
+                    break
+                last_err = "文件不完整"
+            except Exception as exc:
+                last_err = exc
+                log_line(f"JDK {major}：{c['source']} 失败（{exc}）")
+                continue
+        if last_err is not None:
+            raise RuntimeError(f"所有下载源都失败了：{last_err}")
         import zipfile as zf
         with zf.ZipFile(zip_path) as z:
             names = z.namelist()
             top = {n.split("/")[0] for n in names if "/" in n}
             z.extractall(dest_dir)
-            zip_path.unlink()
             for t in top:
                 src = dest_dir / t
                 if src.is_dir() and (src / "bin" / "java.exe").exists():
                     log_line(f"JDK {major} 已解压到 {src}")
+        try:
+            zip_path.unlink()
+        except Exception:
+            pass
         set_progress(running=False, message="完成", done=1, total=1)
     except Exception as exc:
         set_progress(running=False, error=str(exc), message="失败")
@@ -1148,6 +1229,14 @@ def launch(vid: str, username: str = "Steve", memory: int = 4096, jvm_extra: str
             "--assetsDir", str(assets), "--assetIndex", asset_index,
             "--uuid", play_uuid, "--accessToken", play_token, "--userType", user_type,
             "--versionType", "release"]
+    # 联机：直接连服务器
+    _qp = (cfg().get("quick_play") or "").strip()
+    if _qp:
+        cmd += ["--quickPlayMultiplayer", _qp]
+        _c = dict(cfg())
+        _c.pop("quick_play", None)
+        save_cfg(_c)
+        log_line(f"联机直连：{_qp}")
     # 本地皮肤：装了 CustomSkinLoader 的版本才能读到本地 png
     try:
         skin_name = (cfg().get("account") or {}).get("name") or username
@@ -2540,7 +2629,7 @@ def search_project(q: str, limit: int = 60) -> list:
 
 
 # --------------------------------------------------------------------------- update
-APP_VERSION = "1.0.2"
+APP_VERSION = "1.shot1.0"
 DEFAULT_UPDATE_REPO = "citybiome/city-minecraft-ide"
 
 
@@ -2739,6 +2828,222 @@ def write_local_skin(name: str):
 # --------------------------------------------------------------------------- accounts
 MS_CLIENT_ID_DEFAULT = "00000000402b5328"
 
+
+
+
+
+# --------------------------------------------------------------------------- 在线 mod 安装（Modrinth）
+def install_online_mod(query: str, version_id: str = "") -> dict:
+    """按关键词在 Modrinth 找 mod，装进当前版本的 mods 目录"""
+    q = (query or "").strip()
+    if not q:
+        return {"ok": False, "error": "没给关键词"}
+    vid = version_id or (cfg().get("selected") or "")
+    mc_ver = vid
+    try:
+        vj = json.loads((mc_dir() / "versions" / vid / f"{vid}.json").read_text("utf-8"))
+        mc_ver = vj.get("clientVersion") or vj.get("id") or vid
+    except Exception:
+        pass
+
+    try:
+        url = ("https://api.modrinth.com/v2/search?query=" + urllib.parse.quote(q)
+               + "&limit=5&facets=" + urllib.parse.quote(json.dumps([["project_type:mod"]])))
+        res = http_json(url, timeout=25)
+    except Exception as exc:
+        return {"ok": False, "error": "搜索失败：" + str(exc)[:120]}
+
+    hits = (res or {}).get("hits") or []
+    if not hits:
+        return {"ok": False, "error": f"Modrinth 上没搜到「{q}」"}
+
+    proj = hits[0]
+    slug = proj.get("slug") or proj.get("project_id")
+    try:
+        vers = http_json(f"https://api.modrinth.com/v2/project/{slug}/version", timeout=25)
+    except Exception as exc:
+        return {"ok": False, "error": "取版本失败：" + str(exc)[:120]}
+
+    pick = None
+    for v in vers or []:
+        if mc_ver in (v.get("game_versions") or []):
+            files = v.get("files") or []
+            jar = next((f for f in files if str(f.get("filename", "")).endswith(".jar")), None)
+            if jar:
+                pick = (v, jar)
+                break
+    if not pick:
+        gv = []
+        for v in (vers or [])[:6]:
+            for g in (v.get("game_versions") or []):
+                if g not in gv:
+                    gv.append(g)
+        return {"ok": False, "name": proj.get("title"),
+                "error": f"{proj.get('title')} 没有适配 {mc_ver} 的版本（它支持：{' / '.join(gv[:8]) or '未知'}）"}
+
+    v, jar = pick
+    try:
+        raw = http_bytes_any([jar["url"]], timeout=120)
+    except Exception as exc:
+        return {"ok": False, "error": "下载失败：" + str(exc)[:120]}
+
+    d = mods_dir_for(vid)
+    d.mkdir(parents=True, exist_ok=True)
+    out = d / jar["filename"]
+    out.write_bytes(raw)
+    log_line(f"已安装 mod：{jar['filename']}（{len(raw) // 1024} KB）→ {d}")
+    return {"ok": True, "name": proj.get("title"), "file": str(out), "version": v.get("version_number"),
+            "size": len(raw), "dir": str(d)}
+
+
+# --------------------------------------------------------------------------- LAN / 联机
+def _lan_log(version_id: str):
+    return mc_dir() / "versions" / version_id / "logs" / "latest.log"
+
+
+def lan_port(version_id: str = ""):
+    vid = version_id or (cfg().get("selected") or "")
+    if not vid:
+        return None
+    f = _lan_log(vid)
+    if not f.exists():
+        return None
+    try:
+        txt = f.read_text("utf-8", "ignore")
+    except Exception:
+        return None
+    hits = re.findall(r"Published LAN server on port (\d+)", txt)
+    if not hits:
+        m = re.findall(r"Local game hosted on port (\d+)", txt)
+        hits = m
+    return int(hits[-1]) if hits else None
+
+
+def lan_scan(timeout: float = 2.5) -> list:
+    """监听 4445 端口上的局域网世界广播"""
+    import socket as _s
+    out = []
+    sock = _s.socket(_s.AF_INET, _s.SOCK_DGRAM)
+    try:
+        sock.setsockopt(_s.SOL_SOCKET, _s.SO_REUSEADDR, 1)
+        sock.bind(("", 4445))
+        sock.settimeout(timeout)
+        end = time.time() + timeout
+        while time.time() < end:
+            try:
+                data, addr = sock.recvfrom(2048)
+            except _s.timeout:
+                break
+            txt = data.decode("utf-8", "ignore")
+            motd = txt.split("[MOTD]")[1].split("[/MOTD]")[0] if "[MOTD]" in txt else ""
+            port = txt.split("[AD]")[1].split("[/AD]")[0] if "[AD]" in txt else ""
+            out.append({"motd": motd, "port": port, "host": addr[0]})
+    except Exception as exc:
+        return [{"error": str(exc)}]
+    finally:
+        sock.close()
+    return out
+
+
+def local_ips() -> list:
+    import socket as _s
+    ips = []
+    try:
+        sk = _s.socket(_s.AF_INET, _s.SOCK_DGRAM)
+        sk.connect(("223.5.5.5", 80))
+        ips.append(sk.getsockname()[0])
+        sk.close()
+    except Exception:
+        pass
+    return ips
+
+
+def _upnp_map(port: int, proto: str = "TCP", ttl: int = 0) -> dict:
+    """用 SSDP + SOAP 让路由器把端口映射出去（大部分家用路由器支持）"""
+    import socket as _s
+    import urllib.request as _u
+
+    ssdp = ("M-SEARCH * HTTP/1.1\r\n"
+            "HOST: 239.255.255.250:1900\r\n"
+            'MAN: "ssdp:discover"\r\n'
+            "MX: 2\r\n"
+            "ST: urn:schemas-upnp-org:device:InternetGatewayDevice:1\r\n\r\n").encode()
+
+    sock = _s.socket(_s.AF_INET, _s.SOCK_DGRAM)
+    sock.settimeout(2.0)
+    locations = []
+    try:
+        sock.sendto(ssdp, ("239.255.255.250", 1900))
+        end = time.time() + 3
+        while time.time() < end:
+            try:
+                data, _addr = sock.recvfrom(4096)
+            except _s.timeout:
+                break
+            for line in data.decode("utf-8", "ignore").split("\r\n"):
+                if line.lower().startswith("location:"):
+                    locations.append(line.split(":", 1)[1].strip())
+    except Exception:
+        pass
+    finally:
+        sock.close()
+
+    for loc in locations[:4]:
+        try:
+            xml = _u.urlopen(loc, timeout=4).read().decode("utf-8", "ignore")
+        except Exception:
+            continue
+        base = loc.rsplit("/", 1)[0]
+        ctrl = re.findall(r"<controlURL>(.*?)</controlURL>", xml)
+        service = re.findall(r"<serviceType>(urn:schemas-upnp-org:service:WANIPConnection:\d)</serviceType>", xml)
+        if not ctrl or not service:
+            continue
+        url = ctrl[0].strip() if ctrl[0].strip().startswith("http") else base + "/" + ctrl[0].strip().lstrip("/")
+        stype = service[0]
+        ip = local_ips()[0] if local_ips() else "127.0.0.1"
+        soap = (
+            '<?xml version="1.0"?>'
+            '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" '
+            's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body>'
+            f'<u:AddPortMapping xmlns:u="{stype}">'
+            f"<NewRemoteHost></NewRemoteHost><NewExternalPort>{port}</NewExternalPort>"
+            f"<NewProtocol>{proto}</NewProtocol><NewInternalPort>{port}</NewInternalPort>"
+            f"<NewInternalClient>{ip}</NewInternalClient><NewEnabled>1</NewEnabled>"
+            f"<NewPortMappingDescription>CityIDE Minecraft</NewPortMappingDescription>"
+            f"<NewLeaseDuration>{ttl}</NewLeaseDuration>"
+            f"</u:AddPortMapping></s:Body></s:Envelope>"
+        ).encode()
+        req = _u.Request(url, data=soap, headers={
+            "Content-Type": 'text/xml; charset="utf-8"',
+            "SOAPAction": f'"{stype}#AddPortMapping"',
+        })
+        try:
+            _u.urlopen(req, timeout=5)
+        except Exception as exc:
+            return {"ok": False, "error": f"路由器拒绝了映射请求：{str(exc)[:80]}"}
+        # 取公网 IP
+        try:
+            ext = _u.urlopen(loc, timeout=8).read()
+        except Exception:
+            ext = b""
+        wan = ""
+        try:
+            extxml = ext.decode("utf-8", "ignore")
+            wan = (re.findall(r"<NewExternalIPAddress>(.*?)</NewExternalIPAddress>", extxml) or [""])[0]
+        except Exception:
+            pass
+        return {"ok": True, "port": port, "internal": ip, "externalIp": wan, "protocol": proto}
+    return {"ok": False, "error": "没找到支持 UPnP 的路由器（可能关了这个功能）"}
+
+
+def lan_info(version_id: str = "") -> dict:
+    vid = version_id or (cfg().get("selected") or "")
+    port = lan_port(vid)
+    ips = local_ips()
+    out = {"ok": True, "version": vid, "port": port, "ips": ips, "lan": "", "motd": ""}
+    if port and ips:
+        out["lan"] = f"{ips[0]}:{port}"
+    return out
 
 
 # --------------------------------------------------------------------------- local skin server (Yggdrasil)
@@ -3647,6 +3952,10 @@ def build_get(handler, path: str, qs: dict) -> bool:
         handler.end_headers()
         handler.wfile.write(data)
         return True
+    if path == "/api/lan/info":
+        return handler._json(lan_info(qs.get("vid", [""])[0] if qs else "")) or True
+    if path == "/api/lan/scan":
+        return handler._json({"ok": True, "worlds": lan_scan()}) or True
     if path == "/api/account":
         return handler._json(account_state()) or True
     if path == "/api/account/skin":
@@ -4048,6 +4357,18 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json({"accessToken": "cityide-local", "clientToken": "cityide",
                                    "selectedProfile": {"id": _u, "name": _n},
                                    "availableProfiles": [{"id": _u, "name": _n}]})
+            if path == "/api/mods/install-online":
+                return self._json(install_online_mod(body.get("query", ""), body.get("vid", "")))
+            if path == "/api/lan/upnp":
+                return self._json(_upnp_map(int(body.get("port") or 0)))
+            if path == "/api/lan/join":
+                addr = (body.get("addr") or "").strip()
+                if not addr:
+                    return self._json({"ok": False, "error": "地址不能为空"})
+                cfg2 = dict(cfg())
+                cfg2["quick_play"] = addr
+                save_cfg(cfg2)
+                return self._json({"ok": True, "addr": addr})
             if path == "/api/yggdrasil/login":
                 return self._json(ygg_login(body.get("server", ""), body.get("username", ""),
                                             body.get("password", "")))
